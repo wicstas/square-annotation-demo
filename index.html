@@ -9,17 +9,22 @@
       margin: 0
     }
 
-    #toggleOrbitControl {
+    #ui {
       position: fixed;
-      top: 10px;
-      right: 10px;
-      padding: 8px 12px;
-      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+    }
+
+    .toggle {
       cursor: pointer;
+      font-size: 20px;
       background: #eee;
     }
-    #toggleOrbitControl.pressed {
+
+    .toggle.pressed {
       transform: translateY(2px);
+      font-size: 20px;
       background: #555;
     }
   </style>
@@ -38,6 +43,16 @@
 <body>
 
   <script type="module" src="main.js"></script>
+  <div id="ui">
+    <button id="orbitToggle" class="toggle">
+      Toggle Orbit Control
+    </button>
+    <button id="method0" class="toggle">
+      Camera View Projection
+    </button>
+    <button id="method1" class="toggle">
+      Midpoint Planar Projection
+    </button>
 </body>
 
 </html>
