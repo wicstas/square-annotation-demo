@@ -9,9 +9,10 @@ const dpr = window.devicePixelRatio
 
 let postCamera;
 let postScene;
+let postMaterial;
 function setupPost() {
 	postCamera = new THREE.OrthographicCamera(- 1, 1, 1, - 1, 0, 1);
-	const postMaterial = new THREE.ShaderMaterial({
+	postMaterial = new THREE.ShaderMaterial({
 		vertexShader: `
 			varying vec2 vUv;
 
@@ -35,11 +36,10 @@ function setupPost() {
 			}
 
 			void main() {
-				//vec3 diffuse = texture2D( tDiffuse, vUv ).rgb;
+				vec3 diffuse = texture2D( tDiffuse, vUv ).rgb;
 				float depth = readDepth( tDepth, vUv );
 
-				gl_FragColor.rgb = 1.0 - vec3( depth );
-				gl_FragColor.a = 1.0;
+				gl_FragColor.rgb = vec3(depth);
 			}
 			`,
 		uniforms: {
@@ -55,14 +55,15 @@ function setupPost() {
 	postScene.add(postQuad);
 }
 function setupDepthRenderTarget(width, height, dpr) {
-	const renderTarget = new THREE.WebGLRenderTarget(width * dpr, height * dpr, {
-		depthBuffer: true,
-		stencilBuffer: false
-	});
+	const renderTarget = new THREE.WebGLRenderTarget(width * dpr, height * dpr);
+	renderTarget.texture.minFilter = THREE.NearestFilter;
+	renderTarget.texture.magFilter = THREE.NearestFilter;
 	renderTarget.texture.generateMipmaps = false;
 	renderTarget.stencilBuffer = false;
+	renderTarget.samples = 0;
 	renderTarget.depthTexture = new THREE.DepthTexture();
 	renderTarget.depthTexture.type = THREE.UnsignedShortType;
+	renderTarget.depthTexture.format = THREE.DepthFormat;
 	return renderTarget;
 }
 
@@ -74,7 +75,8 @@ const scene = new THREE.Scene();
 // const geometry = new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
 const geometry = new THREE.TorusGeometry(2, 1, 32);
 const material = new THREE.MeshNormalMaterial();
-scene.add(new THREE.Mesh(geometry, material));
+const mesh = new THREE.Mesh(geometry, material);
+scene.add(mesh);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(dpr)
@@ -82,10 +84,9 @@ renderer.setSize(width, height);
 renderer.setAnimationLoop(animate);
 document.body.appendChild(renderer.domElement);
 
-// const renderTarget = setupDepthRenderTarget(width, height, dpr);
-// renderer.setRenderTarget(renderTarget);
+const renderTarget = setupDepthRenderTarget(width, height, dpr);
 
-// setupPost();
+setupPost();
 window.addEventListener('resize', onWindowResize);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -101,8 +102,8 @@ const startCoord = new THREE.Vector2();
 
 window.addEventListener('pointerdown', (e) => {
 	isDragging = true;
-	startCoord.x = (e.clientX / window.innerWidth) * 2 - 1;
-	startCoord.y = -(e.clientY / window.innerHeight) * 2 + 1;
+	startCoord.x = (e.clientX / width) * 2 - 1;
+	startCoord.y = -(e.clientY / height) * 2 + 1;
 
 	raycaster.setFromCamera(startCoord, camera);
 	const intersects = raycaster.intersectObjects(scene.children, true);
@@ -116,12 +117,9 @@ window.addEventListener('pointercancel', (e) => {
 	isDragging = false;
 });
 
-let orbitControlEnabled = true
-
 let prevLine
 window.addEventListener('pointermove', (event) => {
-	if (!isDragging || orbitControlEnabled) return
-	console.log("move")
+	if (!isDragging || controls.enabled) return
 	mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
 	mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -138,7 +136,6 @@ window.addEventListener('pointermove', (event) => {
 			const intersects = raycaster.intersectObject(mesh, false);
 			if (intersects.length > 0) {
 				const intersect = intersects[0];
-				console.log(intersect)
 				if (intersect.normal)
 					points.push(intersect.point.add(intersect.normal.multiplyScalar(epsilon)));
 			}
@@ -158,16 +155,13 @@ btn.id = 'toggleOrbitControl';
 btn.textContent = 'Toggle Orbit Control';
 
 const toggleOrbitControl = () => {
-	if (orbitControlEnabled) {
+	if (controls.enabled) {
 		btn.classList.add('pressed');
-		controls.disconnect();
-		orbitControlEnabled = false;
+		controls.enabled = !controls.enabled;
 	}
 	else {
 		btn.classList.remove('pressed');
-		console.log(btn.classList)
-		controls.connect(renderer.domElement);
-		orbitControlEnabled = true
+		controls.enabled = !controls.enabled;
 	}
 }
 btn.addEventListener('click', toggleOrbitControl);
@@ -178,9 +172,20 @@ window.addEventListener('keydown', (e) => {
 
 document.body.appendChild(btn);
 
+const depthBuffer = new Float32Array(width * dpr * height * dpr * 4);
 function animate(time) {
+	renderer.setRenderTarget(renderTarget);
 	renderer.render(scene, camera);
-	controls.update();
+
+	postMaterial.uniforms.tDiffuse.value = renderTarget.texture
+	postMaterial.uniforms.tDepth.value = renderTarget.depthTexture
+	console.log(renderTarget.depthTexture)
+
+	renderer.setRenderTarget(renderTarget);
+	renderer.setRenderTarget(null);
+	renderer.render(postScene, postCamera);
+
+	renderer.readRenderTargetPixels(renderTarget, 0, 0, width * dpr, height * dpr, depthBuffer)
 }
 
 function onWindowResize() {
