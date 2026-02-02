@@ -3,69 +3,37 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import {
+	computeBoundsTree, disposeBoundsTree,
+	computeBatchedBoundsTree, disposeBatchedBoundsTree, acceleratedRaycast,
+	getTriangleHitPointInfo
+} from 'three-mesh-bvh';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+function coordinateSystem(n, up) {
+	if (up === undefined)
+		up = Math.abs(n.y) < 0.9
+			? new THREE.Vector3(0, 1, 0)
+			: new THREE.Vector3(1, 0, 0);
+
+	const x = new THREE.Vector3().crossVectors(up, n).normalize();
+
+	const y = new THREE.Vector3().crossVectors(n, x).normalize();
+
+	return [x, y, n]
+}
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+THREE.BatchedMesh.prototype.computeBoundsTree = computeBatchedBoundsTree;
+THREE.BatchedMesh.prototype.disposeBoundsTree = disposeBatchedBoundsTree;
+THREE.BatchedMesh.prototype.raycast = acceleratedRaycast;
 
 const width = window.innerWidth, height = window.innerHeight;
 const dpr = window.devicePixelRatio
-
-let postCamera;
-let postScene;
-let postMaterial;
-function setupPost() {
-	postCamera = new THREE.OrthographicCamera(- 1, 1, 1, - 1, 0, 1);
-	postMaterial = new THREE.ShaderMaterial({
-		vertexShader: `
-			varying vec2 vUv;
-
-			void main() {
-				vUv = uv;
-				gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-			}
-				`,
-		fragmentShader: `
-		varying vec2 vUv;
-			uniform sampler2D tDiffuse;
-			uniform sampler2D tDepth;
-			uniform float cameraNear;
-			uniform float cameraFar;
-
-
-			float readDepth( sampler2D depthSampler, vec2 coord ) {
-				float fragCoordZ = texture2D( depthSampler, coord ).x;
-				float viewZ = ( cameraNear * cameraFar ) / ( ( cameraFar - cameraNear ) * fragCoordZ - cameraFar );
-				return ( viewZ + cameraNear ) / ( cameraNear - cameraFar );
-			}
-
-			void main() {
-				vec3 diffuse = texture2D( tDiffuse, vUv ).rgb;
-				float depth = readDepth( tDepth, vUv );
-
-				gl_FragColor.rgb = vec3(depth);
-			}
-			`,
-		uniforms: {
-			cameraNear: { value: camera.near },
-			cameraFar: { value: camera.far },
-			tDiffuse: { value: null },
-			tDepth: { value: null }
-		}
-	});
-	const postPlane = new THREE.PlaneGeometry(2, 2);
-	const postQuad = new THREE.Mesh(postPlane, postMaterial);
-	postScene = new THREE.Scene();
-	postScene.add(postQuad);
-}
-function setupDepthRenderTarget(width, height, dpr) {
-	const renderTarget = new THREE.WebGLRenderTarget(width * dpr, height * dpr);
-	renderTarget.texture.minFilter = THREE.NearestFilter;
-	renderTarget.texture.magFilter = THREE.NearestFilter;
-	renderTarget.texture.generateMipmaps = false;
-	renderTarget.stencilBuffer = false;
-	renderTarget.samples = 0;
-	renderTarget.depthTexture = new THREE.DepthTexture();
-	renderTarget.depthTexture.type = THREE.UnsignedShortType;
-	renderTarget.depthTexture.format = THREE.DepthFormat;
-	return renderTarget;
-}
 
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.01, 10);
 camera.position.set(0, 0, 5);
@@ -73,10 +41,37 @@ camera.position.set(0, 0, 5);
 const scene = new THREE.Scene();
 
 // const geometry = new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
-const geometry = new THREE.TorusGeometry(2, 1, 32);
+// const geometry = new THREE.TorusGeometry(2, 1, 32)
+// const geometry = new THREE.BoxGeometry(1, 1, 1);
+// const geometry = new THREE.CapsuleGeometry( 1, 1, 12, 32, 1 );
 const material = new THREE.MeshNormalMaterial();
+
+const loader = new GLTFLoader();
+// Optional: Provide a DRACOLoader instance to decode compressed mesh data
+// const dracoLoader = new DRACOLoader();
+// dracoLoader.setDecoderPath( '/examples/jsm/libs/draco/' );
+// loader.setDRACOLoader( dracoLoader );
+const gltf = await loader.loadAsync('/public/melody.glb');
+const geometries = [];
+
+gltf.scene.traverse((obj) => {
+	if (obj.isMesh) {
+		const geom = obj.geometry.clone();
+		geom.applyMatrix4(obj.matrixWorld);
+		geometries.push(geom);
+	}
+});
+const geometry = mergeGeometries(
+	geometries,
+	false
+);
+geometry.scale(0.1, 0.1, 0.1)
 const mesh = new THREE.Mesh(geometry, material);
+geometry.computeBoundsTree();
 scene.add(mesh);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 100);
+scene.add(ambientLight);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(dpr)
@@ -84,14 +79,11 @@ renderer.setSize(width, height);
 renderer.setAnimationLoop(animate);
 document.body.appendChild(renderer.domElement);
 
-const renderTarget = setupDepthRenderTarget(width, height, dpr);
-
-setupPost();
 window.addEventListener('resize', onWindowResize);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
+raycaster.firstHitOnly = true
 
 function lerp(x, y, t) {
 	return (1 - t) * x + t * y;
@@ -117,37 +109,84 @@ window.addEventListener('pointercancel', (e) => {
 	isDragging = false;
 });
 
-let prevLine
+let prevAnnotations = []
 window.addEventListener('pointermove', (event) => {
 	if (!isDragging || controls.enabled) return
-	mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-	mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+	const endCoord = new THREE.Vector2((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1);
 
 	const nSegments = 20;
-	const epsilon = 1e-2;
+	const epsilon = 0.01;
 
 	const points = [];
-	const directions = [[startCoord.x, startCoord.y, mouse.x, startCoord.y], [mouse.x, startCoord.y, mouse.x, mouse.y], [mouse.x, mouse.y, startCoord.x, mouse.y], [startCoord.x, mouse.y, startCoord.x, startCoord.y],]
-	for (let d = 0; d < 4; d++)
-		for (let i = 0; i <= nSegments; i++) {
-			const t = i / nSegments;
-			const coord = new THREE.Vector2(lerp(directions[d][0], directions[d][2], t), lerp(directions[d][1], directions[d][3], t))
-			raycaster.setFromCamera(coord, camera);
-			const intersects = raycaster.intersectObject(mesh, false);
-			if (intersects.length > 0) {
-				const intersect = intersects[0];
-				if (intersect.normal)
-					points.push(intersect.point.add(intersect.normal.multiplyScalar(epsilon)));
+	const directions = [[0, 0, 1, 0], [0, 1, 1, 1], [1, 1, 0, 1], [0, 1, 0, 0],]
+	const midpointSelectionMode = true
+
+	let startPos, endPos;
+	{
+		raycaster.setFromCamera(startCoord, camera);
+		const intersects = raycaster.intersectObject(mesh, false);
+		if (intersects.length > 0)
+			startPos = intersects[0].point;
+	}
+	{
+		raycaster.setFromCamera(endCoord, camera);
+		const intersects = raycaster.intersectObject(mesh, false);
+		if (intersects.length > 0)
+			endPos = intersects[0].point;
+	}
+	if (startPos && endPos) {
+		let midPoint;
+		if (midpointSelectionMode) {
+			midPoint = startPos;
+			startPos = midPoint.clone().multiplyScalar(2).sub(endPos);
+		} else {
+			midPoint = startPos.clone().lerp(endPos, 0.5);
+		}
+		const target = mesh.geometry.boundsTree.closestPointToPoint(midPoint);
+		const p = target.point;
+		const n = getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal
+		const tbn = coordinateSystem(n);
+		const projectedStartPos = new THREE.Vector2(startPos.clone().sub(p).dot(tbn[0]), startPos.clone().sub(p).dot(tbn[1]));
+		const projectedEndPos = new THREE.Vector2(endPos.clone().sub(p).dot(tbn[0]), endPos.clone().sub(p).dot(tbn[1]));
+		const A = projectedEndPos.x - projectedStartPos.x;
+		const B = projectedEndPos.y - projectedStartPos.y;
+		const vertexA = new THREE.Vector2(projectedStartPos.x + (A - B) / 2, projectedStartPos.y + (A + B) / 2);
+		const vertexB = new THREE.Vector2(projectedStartPos.x + (A + B) / 2, projectedStartPos.y - (A - B) / 2);
+		const vertices = [projectedStartPos, vertexA, projectedEndPos, vertexB]
+		const annotations = []
+		const toWorld = (coord) => { return p.clone().add(tbn[0].clone().multiplyScalar(coord.x)).add(tbn[1].clone().multiplyScalar(coord.y)) };
+		// const annotation = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial())
+		// [projectedStartPos, projectedEndPos, vertexA, vertexB].forEach((coord) => {
+		// 	const anno = new THREE.Mesh(new THREE.SphereGeometry(0.01, 8, 8), new THREE.MeshBasicMaterial())
+		// 	anno.position.copy(toWorld(coord))
+		// 	annotations.push(anno)
+		// });
+		const points = []
+		for (let d = 0; d < 4; d++) {
+			const v0 = vertices[d];
+			const v1 = vertices[(d + 1) % 4];
+			for (let i = 0; i <= nSegments; i++) {
+				const t = i / nSegments;
+				const coord = v0.clone().lerp(v1, t);
+				const worldPos = toWorld(coord).add(n.clone().multiplyScalar(0.1));
+				raycaster.set(worldPos, n.clone().negate());
+				const intersects = raycaster.intersectObject(mesh, false);
+				if (intersects.length > 0) {
+					const intersect = intersects[0];
+					points.push(intersect.point.add(intersect.normal.clone().multiplyScalar(epsilon)));
+				}
 			}
 		}
 
-	const geometry = new LineGeometry();
-	geometry.setFromPoints(points);
-	const line = new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true }));
-	if (prevLine)
-		scene.remove(prevLine)
-	scene.add(line);
-	prevLine = line
+		if (points.length > 0) {
+			const geometry = new LineGeometry();
+			geometry.setFromPoints(points);
+			annotations.push(new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true })));
+		}
+		prevAnnotations.forEach((x) => scene.remove(x))
+		annotations.forEach((x) => scene.add(x))
+		prevAnnotations = annotations;
+	}
 });
 
 const btn = document.createElement('button');
@@ -169,32 +208,19 @@ window.addEventListener('keydown', (e) => {
 	if (e.key.toLowerCase() === 'q')
 		toggleOrbitControl();
 });
-
 document.body.appendChild(btn);
 
-const depthBuffer = new Float32Array(width * dpr * height * dpr * 4);
 function animate(time) {
-	renderer.setRenderTarget(renderTarget);
 	renderer.render(scene, camera);
-
-	postMaterial.uniforms.tDiffuse.value = renderTarget.texture
-	postMaterial.uniforms.tDepth.value = renderTarget.depthTexture
-	console.log(renderTarget.depthTexture)
-
-	renderer.setRenderTarget(renderTarget);
-	renderer.setRenderTarget(null);
-	renderer.render(postScene, postCamera);
-
-	renderer.readRenderTargetPixels(renderTarget, 0, 0, width * dpr, height * dpr, depthBuffer)
 }
 
 function onWindowResize() {
-	const aspect = window.innerWidth / window.innerHeight;
+	width = window.innerWidth
+	height = window.innerHeight
+	const aspect = width / height;
 	camera.aspect = aspect;
 	camera.updateProjectionMatrix();
 
 	const dpr = renderer.getPixelRatio();
-	renderTarget.setSize(window.innerWidth * dpr, window.innerHeight * dpr);
-	renderer.setSize(window.innerWidth, window.innerHeight);
-
+	renderer.setSize(width, height);
 }
