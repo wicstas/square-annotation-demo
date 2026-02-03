@@ -23,6 +23,9 @@ function coordinateSystem(n, up) {
 
 	return [x, y, n]
 }
+function lerp(x, y, t) {
+	return (1 - t) * x + t * y;
+}
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -43,29 +46,24 @@ const scene = new THREE.Scene();
 // const geometry = new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
 // const geometry = new THREE.TorusGeometry(2, 1, 32)
 // const geometry = new THREE.BoxGeometry(1, 1, 1);
-// const geometry = new THREE.CapsuleGeometry( 1, 1, 12, 32, 1 );
+const geometry = new THREE.CapsuleGeometry(1, 1, 12, 32, 1);
 const material = new THREE.MeshNormalMaterial();
 
 const loader = new GLTFLoader();
-// Optional: Provide a DRACOLoader instance to decode compressed mesh data
-// const dracoLoader = new DRACOLoader();
-// dracoLoader.setDecoderPath( '/examples/jsm/libs/draco/' );
-// loader.setDRACOLoader( dracoLoader );
-const gltf = await loader.loadAsync('/public/melody.glb');
-const geometries = [];
-
-gltf.scene.traverse((obj) => {
-	if (obj.isMesh) {
-		const geom = obj.geometry.clone();
-		geom.applyMatrix4(obj.matrixWorld);
-		geometries.push(geom);
-	}
-});
-const geometry = mergeGeometries(
-	geometries,
-	false
-);
-geometry.scale(0.1, 0.1, 0.1)
+// const gltf = await loader.loadAsync('/public/melody.glb');
+// const geometries = [];
+// gltf.scene.traverse((obj) => {
+// 	if (obj.isMesh) {
+// 		const geom = obj.geometry.clone();
+// 		geom.applyMatrix4(obj.matrixWorld);
+// 		geometries.push(geom);
+// 	}
+// });
+// const geometry = mergeGeometries(
+// 	geometries,
+// 	false
+// );
+// geometry.scale(0.1, 0.1, 0.1);
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
 scene.add(mesh);
@@ -78,16 +76,11 @@ renderer.setPixelRatio(dpr)
 renderer.setSize(width, height);
 renderer.setAnimationLoop(animate);
 document.body.appendChild(renderer.domElement);
-
 window.addEventListener('resize', onWindowResize);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 const raycaster = new THREE.Raycaster();
 raycaster.firstHitOnly = true
-
-function lerp(x, y, t) {
-	return (1 - t) * x + t * y;
-}
 
 let isDragging = false;
 const startCoord = new THREE.Vector2();
@@ -111,6 +104,7 @@ window.addEventListener('pointercancel', (e) => {
 
 let midpointSelectionMode = true
 let cameraProjection = true
+let cameraAxisAlign = false
 
 let prevAnnotations = []
 window.addEventListener('pointermove', (event) => {
@@ -125,11 +119,30 @@ window.addEventListener('pointermove', (event) => {
 	const points = []
 
 	if (cameraProjection) {
-		const directions = [[startCoord.x, startCoord.y, endCoord.x, startCoord.y], [endCoord.x, startCoord.y, endCoord.x, endCoord.y], [endCoord.x, endCoord.y, startCoord.x, endCoord.y], [startCoord.x, endCoord.y, startCoord.x, startCoord.y],]
-		for (let d = 0; d < 4; d++)
+		const pA = startCoord;
+		const pC = endCoord;
+		const aspect = width / height;
+		pA.y /= aspect;
+		pC.y /= aspect;
+		const A = pC.x - pA.x;
+		const B = pC.y - pA.y;
+		let pB;
+		let pD;
+		if (cameraAxisAlign) {
+			pB = pA.clone().add(pX.clone().multiplyScalar(pC.clone().sub(pA).dot(pX)));
+			pD = pA.clone().add(pC).sub(pB);
+		} else {
+			pB = new THREE.Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
+			pD = new THREE.Vector2(pA.x + (A + B) / 2, pA.y - (A - B) / 2);
+		}
+		const vertices = [pA, pB, pC, pD];
+		vertices.forEach(x => { x.y *= aspect });
+		for (let d = 0; d < 4; d++) {
+			const v0 = vertices[d];
+			const v1 = vertices[(d + 1) % 4];
 			for (let i = 0; i <= nSegments; i++) {
 				const t = i / nSegments;
-				const coord = new THREE.Vector2(lerp(directions[d][0], directions[d][2], t), lerp(directions[d][1], directions[d][3], t))
+				const coord = v0.clone().lerp(v1, t);
 				raycaster.setFromCamera(coord, camera);
 				const intersects = raycaster.intersectObject(mesh, false);
 				if (intersects.length > 0) {
@@ -137,6 +150,7 @@ window.addEventListener('pointermove', (event) => {
 					points.push(intersect.point.add(intersect.normal.multiplyScalar(epsilon)));
 				}
 			}
+		}
 	} else {
 		let startPos, endPos;
 		{
@@ -163,20 +177,23 @@ window.addEventListener('pointermove', (event) => {
 			const p = target.point;
 			const n = getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal
 			const tbn = coordinateSystem(n);
-			const projectedStartPos = new THREE.Vector2(startPos.clone().sub(p).dot(tbn[0]), startPos.clone().sub(p).dot(tbn[1]));
-			const projectedEndPos = new THREE.Vector2(endPos.clone().sub(p).dot(tbn[0]), endPos.clone().sub(p).dot(tbn[1]));
-			const A = projectedEndPos.x - projectedStartPos.x;
-			const B = projectedEndPos.y - projectedStartPos.y;
-			const vertexA = new THREE.Vector2(projectedStartPos.x + (A - B) / 2, projectedStartPos.y + (A + B) / 2);
-			const vertexB = new THREE.Vector2(projectedStartPos.x + (A + B) / 2, projectedStartPos.y - (A - B) / 2);
-			const vertices = [projectedStartPos, vertexA, projectedEndPos, vertexB]
+			const pA = new THREE.Vector2(startPos.clone().sub(p).dot(tbn[0]), startPos.clone().sub(p).dot(tbn[1]));
+			const pC = new THREE.Vector2(endPos.clone().sub(p).dot(tbn[0]), endPos.clone().sub(p).dot(tbn[1]));
+			const A = pC.x - pA.x;
+			const B = pC.y - pA.y;
+			let pB;
+			let pD;
+			const xAxisWorld = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+			const pX = new THREE.Vector2(xAxisWorld.dot(tbn[0]), xAxisWorld.dot(tbn[1]));
+			if (cameraAxisAlign) {
+				pB = pA.clone().add(pX.clone().multiplyScalar(pC.clone().sub(pA).dot(pX)));
+				pD = pA.clone().add(pC).sub(pB);
+			} else {
+				pB = new THREE.Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
+				pD = new THREE.Vector2(pA.x + (A + B) / 2, pA.y - (A - B) / 2);
+			}
 			const toWorld = (coord) => { return p.clone().add(tbn[0].clone().multiplyScalar(coord.x)).add(tbn[1].clone().multiplyScalar(coord.y)) };
-			// const annotation = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial())
-			// [projectedStartPos, projectedEndPos, vertexA, vertexB].forEach((coord) => {
-			// 	const anno = new THREE.Mesh(new THREE.SphereGeometry(0.01, 8, 8), new THREE.MeshBasicMaterial())
-			// 	anno.position.copy(toWorld(coord))
-			// 	annotations.push(anno)
-			// });
+			const vertices = [pA, pB, pC, pD];
 			for (let d = 0; d < 4; d++) {
 				const v0 = vertices[d];
 				const v1 = vertices[(d + 1) % 4];
@@ -228,7 +245,7 @@ const UI = document.getElementById('ui');
 	UI.appendChild(btn);
 }
 {
-	const btn = document.getElementById('method0');
+	const btn = document.getElementById('option0');
 	btn.classList.add('pressed');
 	btn.addEventListener('click', () => {
 		cameraProjection = !cameraProjection;
@@ -240,7 +257,7 @@ const UI = document.getElementById('ui');
 	UI.appendChild(btn);
 }
 {
-	const btn = document.getElementById('method1');
+	const btn = document.getElementById('option1');
 	btn.classList.add('pressed');
 	btn.addEventListener('click', () => {
 		midpointSelectionMode = !midpointSelectionMode;
@@ -251,6 +268,18 @@ const UI = document.getElementById('ui');
 	});
 	UI.appendChild(btn);
 }
+{
+	const btn = document.getElementById('option2');
+	btn.addEventListener('click', () => {
+		cameraAxisAlign = !cameraAxisAlign;
+		if (cameraAxisAlign)
+			btn.classList.add('pressed');
+		else
+			btn.classList.remove('pressed');
+	});
+	UI.appendChild(btn);
+}
+
 function animate(time) {
 	renderer.render(scene, camera);
 }

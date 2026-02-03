@@ -10,16 +10,20 @@
     }
 
     #ui {
-      position: fixed;
+      position: absolute;
+      top: 0;
+      left: 0;
       display: flex;
       flex-direction: column;
-      background: #fff;
+      width: fit-content;
     }
 
     .toggle {
+      width: fit-content;
       cursor: pointer;
       font-size: 20px;
       background: #eee;
+      padding: 8px 12px;
     }
 
     .toggle.pressed {
@@ -47,11 +51,14 @@
     <button id="orbitToggle" class="toggle">
       Toggle Orbit Control
     </button>
-    <button id="method0" class="toggle">
+    <button id="option0" class="toggle">
       Camera View Projection
     </button>
-    <button id="method1" class="toggle">
+    <button id="option1" class="toggle">
       Midpoint Planar Projection
+    </button>
+    <button id="option2" class="toggle">
+      Camera Axis Align
     </button>
 </body>
 
