@@ -23,13 +23,21 @@
       cursor: pointer;
       font-size: 20px;
       background: #eee;
-      padding: 8px 12px;
+      padding: 4px;
     }
 
     .toggle.pressed {
       transform: translateY(2px);
       font-size: 20px;
       background: #555;
+    }
+
+    .selector {
+      width: fit-content;
+      cursor: pointer;
+      font-size: 20px;
+      background: #eee;
+      padding: 4px;
     }
   </style>
   <script type="importmap">
@@ -45,21 +53,34 @@
 </head>
 
 <body>
+  <div id="ui">
+    <button id="orbit-toggle" class="toggle">
+      (1) Toggle Orbit Control
+    </button>
+    <button id="center-mode" class="toggle">
+      (2) Center Mode
+    </button>
+    <button id="camera-view" class="toggle">
+      (3) Camera View Projection
+    </button>
+    <button id="camera-align" class="toggle">
+      (4) Camera Axis Align
+    </button>
+    <button id="chain" class="toggle">
+      (5) Chain
+    </button>
+    <select id="projection-method" class="selector">
+      <option value="normal" selected>ProjectionMethod: Normal</option>
+      <option value="distance">ProjectionMethod: Distance</option>
+    </select>
+    <select id="draw-shape" class="selector">
+      <option value="rectangle">Shape: Rectangle</option>
+      <option value="circle">Shape: Circle</option>
+      <option value="polygon">Shape: Polygon</option>
+    </select>
+  </div>
 
   <script type="module" src="main.js"></script>
-  <div id="ui">
-    <button id="orbitToggle" class="toggle">
-      Toggle Orbit Control
-    </button>
-    <button id="option0" class="toggle">
-      Camera View Projection
-    </button>
-    <button id="option1" class="toggle">
-      Midpoint Planar Projection
-    </button>
-    <button id="option2" class="toggle">
-      Camera Axis Align
-    </button>
 </body>
 
 </html>
