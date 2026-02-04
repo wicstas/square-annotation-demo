@@ -94,7 +94,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('capsule');
+const geometry = await sampleGeo('melody');
 const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
@@ -476,8 +476,11 @@ window.addEventListener('keydown', (e) => {
 		removeQueue.forEach((x) => scene.remove(x));
 		drawAnnotations(true).forEach((x) => scene.add(x));
 		commitAnnotations();
+	} if (e.key == 'Escape') {
+		removeQueue.forEach((x) => scene.remove(x));
+		drawAnnotations(false).forEach((x) => scene.add(x));
+		commitAnnotations();
 	}
-
 });
 
 function animate(time) {
