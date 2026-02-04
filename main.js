@@ -83,8 +83,10 @@ THREE.BatchedMesh.prototype.computeBoundsTree = computeBatchedBoundsTree;
 THREE.BatchedMesh.prototype.disposeBoundsTree = disposeBatchedBoundsTree;
 THREE.BatchedMesh.prototype.raycast = acceleratedRaycast;
 
-let width = window.innerWidth, height = window.innerHeight;
-const dpr = window.devicePixelRatio
+let width = window.innerWidth;
+let height = window.innerHeight;
+let aspect = width / height;
+const dpr = window.devicePixelRatio;
 window.addEventListener('resize', onWindowResize);
 
 const scene = new THREE.Scene();
@@ -111,16 +113,15 @@ const controls = new OrbitControls(camera, renderer.domElement);
 const raycaster = new THREE.Raycaster();
 raycaster.firstHitOnly = true
 
-let centerMode = true
-let cameraView = false
+let centerMode = false
+let screenspaceProjection = false
 let cameraAxisAlign = true
 let projectionMethod = 'normal'
 let shape = "rectangle"
-let chain = false
 const epsilon = 0.01;
-const segmentDensity = 1000;
+const segmentDensity = 100;
 
-function buildRectangleVertices(pX, pA, pC, aspect = 1) {
+function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 	pA = pA.clone()
 	pC = pC.clone()
 	pA.y /= aspect;
@@ -130,7 +131,7 @@ function buildRectangleVertices(pX, pA, pC, aspect = 1) {
 	let pB;
 	let pD;
 	if (cameraAxisAlign) {
-		pB = add(pA, proj(pX, sub(pC, pA)));
+		pB = add(pA, proj(axis, sub(pC, pA)));
 		pD = sub(add(pA, pC), pB);
 	} else {
 		pB = new THREE.Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
@@ -152,7 +153,9 @@ function projectLineSegment(v0, v1, projector) {
 	}
 	return points
 }
-function projectRectangle(vertices, projector) {
+function projectRectangle(axis, pA, pC, aspect, projector) {
+	const vertices = buildRectangleVertices(axis, pA, pC, aspect)
+
 	const points = []
 	for (let d = 0; d < 4; d++) {
 		points.push(...projectLineSegment(vertices[d], vertices[(d + 1) % 4], projector))
@@ -169,9 +172,10 @@ function buildCircleVertices(pA, pB, aspect = 1.0) {
 	center.y *= aspect
 	return [center, radius, radius * aspect]
 }
-function projectCircle(center, rX, rY, projector) {
+function projectCircle(pA, pB, aspect, projector) {
+	const [center, rX, rY] = buildCircleVertices(pA, pB, aspect);
 	const points = []
-	const nSegments = rX * segmentDensity;
+	const nSegments = rX * 2 * Math.PI * segmentDensity;
 	for (let i = 0; i <= nSegments; i++) {
 		const t = i / nSegments * Math.PI * 2;
 		const coord = new THREE.Vector2(center.x + rX * Math.cos(t), center.y + rY * Math.sin(t));
@@ -189,154 +193,215 @@ function arrayToOptional(a) {
 }
 function closestPoint(p) {
 	const target = mesh.geometry.boundsTree.closestPointToPoint(p);
-	return { p: target.point, n: getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal };
+	return { point: target.point, normal: getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal };
 
+}
+function cameraRayIntersection(coord) {
+	raycaster.setFromCamera(coord, camera);
+	const intersects = raycaster.intersectObject(mesh, false);
+	if (intersects.length > 0)
+		return intersects[0];
+	else
+		return null;
+}
+function buildPlanarSystem(p, n, ...points) {
+	const tbn = coordinateSystem(n);
+	const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
+	const toWorld = (coord) => { return add(add(p, mul(tbn[0], coord.x)), mul(tbn[1], coord.y)); };
+	const axis = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion));
+	return [toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 
 let removeQueue = []
-let startCoord;
 let isDragging = false;
-let tap = true
+let vertexArray = [];
+let noMovement = true;
+let firstMovement = true;
+let tentativeCoord;
+let lastPointMesh;
+
+function commitAnnotations() {
+	removeQueue = [];
+	vertexArray = [];
+}
+function addVertex(coord) {
+	const position = cameraRayIntersection(coord)?.point;
+	if (screenspaceProjection)
+		vertexArray.push(coord);
+	else if (position)
+		vertexArray.push(position);
+
+
+	if (position) {
+		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+		lastPointMesh = new THREE.Mesh(geometry, material);
+		lastPointMesh.position.copy(position);
+		scene.add(lastPointMesh);
+	}
+}
+function updateLastVertex(coord) {
+	const position = cameraRayIntersection(coord)?.point;
+	if (screenspaceProjection)
+		vertexArray[vertexArray.length - 1] = coord;
+	else if (position)
+		vertexArray[vertexArray.length - 1] = position;
+
+	if (position) {
+		scene.remove(lastPointMesh);
+		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+		lastPointMesh = new THREE.Mesh(geometry, material);
+		lastPointMesh.position.copy(position);
+		scene.add(lastPointMesh);
+	}
+}
+function createLine(points) {
+	const geometry = new LineGeometry();
+	geometry.setFromPoints(points);
+	return new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true }));
+}
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
-	removeQueue = []
-	tap = true
+	tentativeCoord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
-	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
-	if (!startCoord)
-		startCoord = coord;
-	else {
-		drawAnnotation(startCoord, coord);
-		if (chain)
-			startCoord = coord;
-		else
-			startCoord = undefined;
-	}
+	isDragging = true;
+	noMovement = true;
+	firstMovement = true;
 
-	raycaster.setFromCamera(coord, camera);
-	const intersects = raycaster.intersectObjects(scene.children, true);
-	if (intersects.length > 0) {
-		isDragging = true;
-		const geometry = new THREE.SphereGeometry(0.01, 8, 8);
-		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-		const mesh = new THREE.Mesh(geometry, material);
-		mesh.position.copy(intersects[0].point);
-		scene.add(mesh);
-	}
+	if (!controls.enabled)
+		addVertex(tentativeCoord);
+
+	const annotations = drawAnnotations();
+	removeQueue.forEach((x) => scene.remove(x));
+	annotations.forEach((x) => scene.add(x));
+	removeQueue = annotations;
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
 	isDragging = false;
-	if (!tap)
-		startCoord = undefined;
+
+	if (controls.enabled && noMovement)
+		addVertex(tentativeCoord);
+
+	const annotations = drawAnnotations();
+	removeQueue.forEach((x) => scene.remove(x));
+	annotations.forEach((x) => scene.add(x));
+	removeQueue = annotations;
 });
 renderer.domElement.addEventListener('pointercancel', (e) => {
 	isDragging = false;
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
-	tap = false
-	if (!isDragging || controls.enabled) return
-	const endCoord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+	noMovement = false;
+	if (!isDragging || controls.enabled)
+		return;
+	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
-	if (startCoord)
-		drawAnnotation(startCoord, endCoord);
-});
-function drawAnnotation(startCoord, endCoord) {
-	startCoord = startCoord.clone();
-	endCoord = endCoord.clone();
-	const annotations = []
-	let points;
+	if (firstMovement)
+		addVertex(coord);
+	else
+		updateLastVertex(coord);
+	firstMovement = false;
 
-	if (cameraView) {
-		if (centerMode) {
-			startCoord = sub(mul(startCoord, 2), endCoord);
-		}
-		if (shape == 'rectangle') {
-			const vertices = buildRectangleVertices(new THREE.Vector2(1, 0), startCoord, endCoord, width / height)
-			points = projectRectangle(vertices, coord => {
-				raycaster.setFromCamera(coord, camera);
-				return arrayToOptional(raycaster.intersectObject(mesh, false));
-			});
-		} else if (shape == 'circle') {
-			const [center, rX, rY] = buildCircleVertices(startCoord, endCoord, width / height)
-			points = projectCircle(center, rX, rY, coord => {
-				raycaster.setFromCamera(coord, camera);
-				return arrayToOptional(raycaster.intersectObject(mesh, false));
-			});
-		} else if (shape == 'polygon') {
-			points = projectLineSegment(startCoord, endCoord, coord => {
-				raycaster.setFromCamera(coord, camera);
-				return arrayToOptional(raycaster.intersectObject(mesh, false));
-			});
-		} else {
-			alert(`Unknown shape ${shape}`);
-		}
-	} else {
-		let startPos, endPos;
-		{
-			raycaster.setFromCamera(startCoord, camera);
-			const intersects = raycaster.intersectObject(mesh, false);
-			if (intersects.length > 0)
-				startPos = intersects[0].point;
-		}
-		{
-			raycaster.setFromCamera(endCoord, camera);
-			const intersects = raycaster.intersectObject(mesh, false);
-			if (intersects.length > 0)
-				endPos = intersects[0].point;
-		}
-		if (startPos && endPos) {
-			let center;
-			if (centerMode) {
-				center = startPos;
-				startPos = sub(mul(center, 2), endPos);
-			} else {
-				center = lerp(startPos, endPos, 0.5);
-			}
-			const { p, n } = closestPoint(center);
-			const tbn = coordinateSystem(n);
-			const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
-			const toWorld = (coord) => { return add(add(p, mul(tbn[0], coord.x)), mul(tbn[1], coord.y)); };
-			const pA = toLocal(sub(startPos, p));
-			const pC = toLocal(sub(endPos, p));
-			const pX = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion));
-			let projector;
-			if (projectionMethod == 'normal')
-				projector = toWorld => coord => {
-					const worldPos = add(toWorld(coord), mul(n, sub(camera.position, p).dot(n)));
-					raycaster.set(worldPos, neg(n));
-					return arrayToOptional(raycaster.intersectObject(mesh, false));
-				}
-			else if (projectionMethod == 'distance')
-				projector = toWorld => coord => {
-					const worldPos = toWorld(coord);
-					const target = mesh.geometry.boundsTree.closestPointToPoint(worldPos);
-					return { point: target.point, normal: getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal };
-				};
-			else
-				alert(`Unknown projection method ${projectionMethod}`);
-
-			if (shape == 'rectangle') {
-				const vertices = buildRectangleVertices(pX, pA, pC);
-				points = projectRectangle(vertices, projector(toWorld));
-			} else if (shape == 'circle') {
-				const [center, rX, rY] = buildCircleVertices(pA, pC);
-				points = projectCircle(center, rX, rY, projector(toWorld));
-			} else if (shape == 'polygon') {
-				points = projectLineSegment(startPos, endPos, projector(x => x));
-			} else {
-				alert(`Unknown shape ${shape}`);
-			}
-		}
-	}
-
-	if (points && points.length > 0) {
-		const geometry = new LineGeometry();
-		geometry.setFromPoints(points);
-		annotations.push(new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true })));
-	}
-	removeQueue.forEach((x) => scene.remove(x))
-	annotations.forEach((x) => scene.add(x))
+	const annotations = drawAnnotations();
+	removeQueue.forEach((x) => scene.remove(x));
+	annotations.forEach((x) => scene.add(x));
 	removeQueue = annotations;
+});
+function drawAnnotations(completePath) {
+	const annotations = []
+
+	if (shape == 'rectangle') {
+		for (let i = 0; i < vertexArray.length - 1; i += 2) {
+			let p0 = vertexArray[i].clone();
+			let p1 = vertexArray[i + 1].clone();
+			if (centerMode)
+				p0 = sub(mul(p0, 2), p1);
+			const pc = lerp(p0, p1, 0.5);
+
+			if (screenspaceProjection) {
+				annotations.push(createLine(projectRectangle(new THREE.Vector2(1, 0), p0, p1, width / height, cameraRayIntersection)));
+			} else {
+				const { point: p, normal: n } = closestPoint(pc);
+				const [toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				if (projectionMethod == 'normal')
+					annotations.push(createLine(projectRectangle(axis, pA, pC, 1, coord => {
+						const worldPos = add(toWorld(coord), mul(n, sub(camera.position, p).dot(n)));
+						raycaster.set(worldPos, neg(n));
+						return arrayToOptional(raycaster.intersectObject(mesh, false));
+					})));
+				else if (projectionMethod == 'distance')
+					annotations.push(createLine(projectRectangle(axis, pA, pC, 1, coord => closestPoint(toWorld(coord)))));
+			}
+		}
+	} else if (shape == 'circle') {
+		for (let i = 0; i < vertexArray.length - 1; i += 2) {
+			let p0 = vertexArray[i].clone();
+			let p1 = vertexArray[i + 1].clone();
+			if (centerMode)
+				p0 = sub(mul(p0, 2), p1);
+			const pc = lerp(p0, p1, 0.5);
+
+			if (screenspaceProjection) {
+				annotations.push(createLine(projectCircle(p0, p1, width / height, cameraRayIntersection)));
+			} else {
+				const { point: p, normal: n } = closestPoint(pc);
+				const [toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				if (projectionMethod == 'normal')
+					annotations.push(createLine(projectCircle(pA, pC, 1, coord => {
+						const worldPos = add(toWorld(coord), mul(n, sub(camera.position, p).dot(n)));
+						raycaster.set(worldPos, neg(n));
+						return arrayToOptional(raycaster.intersectObject(mesh, false));
+					})));
+				else if (projectionMethod == 'distance')
+					annotations.push(createLine(projectCircle(pA, pC, 1, coord => closestPoint(toWorld(coord)))));
+			}
+		}
+	} else if (shape == 'polygon') {
+		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
+			let p0 = vertexArray[i].clone();
+			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
+
+			if (screenspaceProjection) {
+				annotations.push(createLine(projectLineSegment(p0, p1, cameraRayIntersection)));
+			} else {
+				annotations.push(createLine(projectLineSegment(p0, p1, closestPoint)));
+			}
+		}
+	} else if (shape == 'spline') {
+		if (vertexArray.length > 1) {
+			let vertices = [...vertexArray];
+			if (screenspaceProjection)
+				vertices = vertexArray.map(x => new THREE.Vector3(x, 0));
+			let totalLength = 0;
+			for (let i = 0; i < vertices.length - 1; i++)
+				totalLength += sub(vertices[i], vertices[i + 1]).length();
+			const nSegments = segmentDensity * totalLength;
+			let curve = new THREE.CatmullRomCurve3(vertices);
+			if (completePath)
+				curve.closed = true;
+			let points = curve.getPoints(nSegments);
+			if (screenspaceProjection)
+				points = points.map(p => {
+					const projection = cameraRayIntersection(p);
+					if (projection)
+						return add(projection.point, mul(projection.normal, epsilon));
+					else
+						return null;
+				}).filter(p => p);
+			else
+				points = points.map(p => {
+					const projection = closestPoint(p);
+					if (projection)
+						return add(projection.point, mul(projection.normal, epsilon));
+					else
+						return null;
+				}).filter(p => p);
+			annotations.push(createLine(points));
+		}
+	}
+
+	return annotations;
 }
 
 function setupToggle(id, getValue, setValue, key) {
@@ -360,20 +425,59 @@ function setupToggle(id, getValue, setValue, key) {
 			if (e.key.toLowerCase() == key)
 				callback();
 		});
+
+	return btn;
 }
-setupToggle('orbit-toggle', () => controls.enabled, x => controls.enabled = x, '1');
-setupToggle('center-mode', () => centerMode, x => centerMode = x, '2');
-setupToggle('camera-view', () => cameraView, x => cameraView = x, '3');
-setupToggle('camera-align', () => cameraAxisAlign, x => cameraAxisAlign = x, '4');
-setupToggle('chain', () => chain, x => { chain = x; if (!chain) startCoord = undefined }, '5');
-document.getElementById('projection-method').addEventListener('change', e => projectionMethod = e.target.value);
-document.getElementById('draw-shape').addEventListener('change', e => shape = e.target.value);
+setupToggle('orbit-toggle', () => controls.enabled, x => {
+	controls.enabled = x;
+	commitAnnotations();
+}, '1');
+setupToggle('center-mode', () => centerMode, x => {
+	centerMode = x;
+	commitAnnotations();
+}, '2');
+setupToggle('screen-space', () => screenspaceProjection, x => {
+	screenspaceProjection = x;
+	commitAnnotations();
+}, '3');
+setupToggle('camera-align', () => cameraAxisAlign, x => {
+	cameraAxisAlign = x;
+	commitAnnotations();
+}, '4');
+document.getElementById('projection-method').addEventListener('change', e => {
+	projectionMethod = e.target.value;
+	commitAnnotations();
+});
+
+const projectionMethodElement = document.getElementById("projection-method");
+const optionNormalElement = projectionMethodElement.querySelector('option[value="normal"]');
+
+document.getElementById('draw-shape').addEventListener('change', e => {
+	shape = e.target.value;
+	if (shape == 'rectangle') {
+		document.getElementById('center-mode').style.display = 'block';
+		optionNormalElement.disabled = false;
+	}
+	if (shape == 'circle') {
+		document.getElementById('center-mode').style.display = 'block';
+		optionNormalElement.disabled = false;
+	}
+	if (shape == 'polygon') {
+		document.getElementById('center-mode').style.display = 'none';
+		optionNormalElement.disabled = true;
+		projectionMethod = 'distance';
+	}
+	commitAnnotations();
+});
 document.getElementById("projection-method").value = projectionMethod
 document.getElementById("draw-shape").value = shape
-
 window.addEventListener('keydown', (e) => {
-	if (e.key == "Escape")
-		startCoord = undefined;
+	if (e.key == 'Enter') {
+		removeQueue.forEach((x) => scene.remove(x));
+		drawAnnotations(true).forEach((x) => scene.add(x));
+		commitAnnotations();
+	}
+
 });
 
 function animate(time) {
@@ -383,7 +487,7 @@ function animate(time) {
 function onWindowResize() {
 	width = window.innerWidth
 	height = window.innerHeight
-	const aspect = width / height;
+	aspect = width / height;
 	camera.aspect = aspect;
 	camera.updateProjectionMatrix();
 

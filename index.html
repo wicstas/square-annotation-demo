@@ -60,14 +60,11 @@
     <button id="center-mode" class="toggle">
       (2) Center Mode
     </button>
-    <button id="camera-view" class="toggle">
-      (3) Camera View Projection
+    <button id="screen-space" class="toggle">
+      (3) Screenspace Projection
     </button>
     <button id="camera-align" class="toggle">
       (4) Camera Axis Align
-    </button>
-    <button id="chain" class="toggle">
-      (5) Chain
     </button>
     <select id="projection-method" class="selector">
       <option value="normal" selected>ProjectionMethod: Normal</option>
@@ -77,7 +74,11 @@
       <option value="rectangle">Shape: Rectangle</option>
       <option value="circle">Shape: Circle</option>
       <option value="polygon">Shape: Polygon</option>
+      <option value="spline">Shape: Spline</option>
     </select>
+    <div class="toggle">
+      Press `Enter` to complete path
+    </div>
   </div>
 
   <script type="module" src="main.js"></script>
