@@ -94,7 +94,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('melody');
+const geometry = await sampleGeo('capsule');
 const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
@@ -208,17 +208,16 @@ function buildPlanarSystem(p, n, ...points) {
 	const tbn = coordinateSystem(n);
 	const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
 	const toWorld = (coord) => { return add(add(p, mul(tbn[0], coord.x)), mul(tbn[1], coord.y)); };
-	const axis = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion));
+	const axis = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)).normalize();
 	return [toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 
 let removeQueue = []
-let isDragging = false;
 let vertexArray = [];
-let noMovement = true;
-let firstMovement = true;
-let tentativeCoord;
-let lastPointMesh;
+let expectedNextVertex;
+let expectedVertexPointMesh;
+let released = true;
+let moved = false;
 
 function commitAnnotations() {
 	removeQueue = [];
@@ -235,25 +234,9 @@ function addVertex(coord) {
 	if (position) {
 		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-		lastPointMesh = new THREE.Mesh(geometry, material);
-		lastPointMesh.position.copy(position);
-		scene.add(lastPointMesh);
-	}
-}
-function updateLastVertex(coord) {
-	const position = cameraRayIntersection(coord)?.point;
-	if (screenspaceProjection)
-		vertexArray[vertexArray.length - 1] = coord;
-	else if (position)
-		vertexArray[vertexArray.length - 1] = position;
-
-	if (position) {
-		scene.remove(lastPointMesh);
-		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
-		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-		lastPointMesh = new THREE.Mesh(geometry, material);
-		lastPointMesh.position.copy(position);
-		scene.add(lastPointMesh);
+		const mesh = new THREE.Mesh(geometry, material);
+		mesh.position.copy(position);
+		scene.add(mesh);
 	}
 }
 function createLine(points) {
@@ -263,58 +246,67 @@ function createLine(points) {
 }
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
-	tentativeCoord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+	if (!controls.enabled) {
+		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		addVertex(coord);
+		removeQueue.forEach((x) => scene.remove(x));
+		const annotations = drawAnnotations({});
+		annotations.forEach((x) => scene.add(x));
+		removeQueue = annotations;
+	}
 
-	isDragging = true;
-	noMovement = true;
-	firstMovement = true;
-
-	if (!controls.enabled)
-		addVertex(tentativeCoord);
-
-	const annotations = drawAnnotations();
-	removeQueue.forEach((x) => scene.remove(x));
-	annotations.forEach((x) => scene.add(x));
-	removeQueue = annotations;
+	released = false;
+	moved = false;
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
-	isDragging = false;
-
-	if (controls.enabled && noMovement)
-		addVertex(tentativeCoord);
-
-	const annotations = drawAnnotations();
-	removeQueue.forEach((x) => scene.remove(x));
-	annotations.forEach((x) => scene.add(x));
-	removeQueue = annotations;
+	if ((controls.enabled && !moved) || (!controls.enabled && moved)) {
+		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		addVertex(coord);
+		removeQueue.forEach((x) => scene.remove(x));
+		const annotations = drawAnnotations({});
+		annotations.forEach((x) => scene.add(x));
+		removeQueue = annotations;
+	}
+	released = true;
 });
 renderer.domElement.addEventListener('pointercancel', (e) => {
-	isDragging = false;
+	released = true;
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
-	noMovement = false;
-	if (!isDragging || controls.enabled)
+	moved = true;
+	if (!released && controls.enabled)
 		return;
 	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
-	if (firstMovement)
-		addVertex(coord);
-	else
-		updateLastVertex(coord);
-	firstMovement = false;
+	const position = cameraRayIntersection(coord)?.point;
+	if (screenspaceProjection)
+		expectedNextVertex = coord;
+	else if (position)
+		expectedNextVertex = position;
 
-	const annotations = drawAnnotations();
+	if (position) {
+		scene.remove(expectedVertexPointMesh);
+		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+		expectedVertexPointMesh = new THREE.Mesh(geometry, material);
+		expectedVertexPointMesh.position.copy(position);
+		scene.add(expectedVertexPointMesh);
+	}
+
+	const annotations = drawAnnotations({ previewNextVertex: true });
 	removeQueue.forEach((x) => scene.remove(x));
 	annotations.forEach((x) => scene.add(x));
 	removeQueue = annotations;
 });
-function drawAnnotations(completePath) {
+function drawAnnotations({ previewNextVertex = false, completePath = false }) {
+	let vertices = [...vertexArray];
+	if (previewNextVertex) vertices.push(expectedNextVertex);
 	const annotations = []
 
 	if (shape == 'rectangle') {
-		for (let i = 0; i < vertexArray.length - 1; i += 2) {
-			let p0 = vertexArray[i].clone();
-			let p1 = vertexArray[i + 1].clone();
+		for (let i = 0; i < vertices.length - 1; i += 2) {
+			let p0 = vertices[i].clone();
+			let p1 = vertices[i + 1].clone();
 			if (centerMode)
 				p0 = sub(mul(p0, 2), p1);
 			const pc = lerp(p0, p1, 0.5);
@@ -335,9 +327,9 @@ function drawAnnotations(completePath) {
 			}
 		}
 	} else if (shape == 'circle') {
-		for (let i = 0; i < vertexArray.length - 1; i += 2) {
-			let p0 = vertexArray[i].clone();
-			let p1 = vertexArray[i + 1].clone();
+		for (let i = 0; i < vertices.length - 1; i += 2) {
+			let p0 = vertices[i].clone();
+			let p1 = vertices[i + 1].clone();
 			if (centerMode)
 				p0 = sub(mul(p0, 2), p1);
 			const pc = lerp(p0, p1, 0.5);
@@ -358,9 +350,9 @@ function drawAnnotations(completePath) {
 			}
 		}
 	} else if (shape == 'polygon') {
-		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
-			let p0 = vertexArray[i].clone();
-			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
+		for (let i = 0; i < (completePath ? vertices.length : vertices.length - 1); i++) {
+			let p0 = vertices[i].clone();
+			let p1 = vertices[(i + 1) % vertices.length].clone();
 
 			if (screenspaceProjection) {
 				annotations.push(createLine(projectLineSegment(p0, p1, cameraRayIntersection)));
@@ -369,10 +361,9 @@ function drawAnnotations(completePath) {
 			}
 		}
 	} else if (shape == 'spline') {
-		if (vertexArray.length > 1) {
-			let vertices = [...vertexArray];
+		if (vertices.length > 1) {
 			if (screenspaceProjection)
-				vertices = vertexArray.map(x => new THREE.Vector3(x, 0));
+				vertices = vertices.map(v => new THREE.Vector3(v.x, v.y, 0));
 			let totalLength = 0;
 			for (let i = 0; i < vertices.length - 1; i++)
 				totalLength += sub(vertices[i], vertices[i + 1]).length();
@@ -383,7 +374,7 @@ function drawAnnotations(completePath) {
 			let points = curve.getPoints(nSegments);
 			if (screenspaceProjection)
 				points = points.map(p => {
-					const projection = cameraRayIntersection(p);
+					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
 					if (projection)
 						return add(projection.point, mul(projection.normal, epsilon));
 					else
@@ -474,11 +465,12 @@ document.getElementById("draw-shape").value = shape
 window.addEventListener('keydown', (e) => {
 	if (e.key == 'Enter') {
 		removeQueue.forEach((x) => scene.remove(x));
-		drawAnnotations(true).forEach((x) => scene.add(x));
+		drawAnnotations({ completePath: true }).forEach((x) => scene.add(x));
 		commitAnnotations();
 	} if (e.key == 'Escape') {
+		scene.remove(expectedVertexPointMesh);
 		removeQueue.forEach((x) => scene.remove(x));
-		drawAnnotations(false).forEach((x) => scene.add(x));
+		drawAnnotations({ completePath: false }).forEach((x) => scene.add(x));
 		commitAnnotations();
 	}
 });
