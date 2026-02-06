@@ -145,13 +145,14 @@ function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 function projectLineSegment(v0, v1, projector) {
 	const points = []
 	const nSegments = segmentDensity * sub(v0, v1).length();
-	for (let i = 0; i <= nSegments; i++) {
-		const t = i / nSegments;
-		const coord = lerp(v0, v1, t);
-		const projection = projector(coord);
-		if (projection)
-			points.push(add(projection.point, mul(projection.normal, epsilon)));
-	}
+	if (nSegments)
+		for (let i = 0; i <= nSegments; i++) {
+			const t = i / nSegments;
+			const coord = lerp(v0, v1, t);
+			const projection = projector(coord);
+			if (projection)
+				points.push(add(projection.point, mul(projection.normal, epsilon)));
+		}
 	return points
 }
 function projectRectangle(vertices, projector) {
@@ -208,7 +209,7 @@ function buildPlanarSystem(p, n, ...points) {
 	const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
 	const toWorld = (coord) => { return add(add(p, mul(tbn[0], coord.x)), mul(tbn[1], coord.y)); };
 	const axis = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)).normalize();
-	return [toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
+	return [toLocal, toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 function pathLength(points) {
 	let totalLength = 0;
@@ -223,7 +224,7 @@ let expectedNextVertex;
 let expectedVertexPointMesh;
 let released = true;
 let moved = false;
-let labelUpdators = [];
+let labels = [];
 let activeLabels = [];
 
 function commitAnnotations() {
@@ -231,19 +232,31 @@ function commitAnnotations() {
 	gVertexArray = [];
 	activeLabels = [];
 }
-function updateLabel(div, worldPos) {
-	const v = worldPos.clone().project(camera);
-	const x = (v.x * 0.5 + 0.5) * width;
-	const y = (-v.y * 0.5 + 0.5) * height;
+function updateLabel({ label: div, position }) {
+	const ndc = position.clone().project(camera);
+	const intersection = cameraRayIntersection(ndc);
+	div.style.opacity = 1;
+	if (intersection)
+		if (intersection.distance < sub(position, camera.position).length())
+			div.style.opacity = 0.3;
+	const x = (ndc.x * 0.5 + 0.5) * width;
+	const y = (-ndc.y * 0.5 + 0.5) * height;
 
 	div.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
 }
 function updateLabels() {
-	labelUpdators.forEach(labelUpdator => labelUpdator());
+	labels.forEach(updateLabel);
 }
 
 function addVertex(coord) {
 	const position = cameraRayIntersection(coord)?.point;
+	// if (gVertexArray.length > 0) {
+	// 	if (screenspaceProjection && gVertexArray[gVertexArray.length - 1] === coord)
+	// 		return;
+	// 	if (!screenspaceProjection && gVertexArray[gVertexArray.length - 1] === position)
+	// 		return;
+	// }
+
 	if (screenspaceProjection)
 		gVertexArray.push(coord);
 	else if (position)
@@ -259,7 +272,8 @@ function addVertex(coord) {
 }
 function createPath(points) {
 	const geometry = new LineGeometry();
-	geometry.setFromPoints(points);
+	if (points.length > 0)
+		geometry.setFromPoints(points);
 	return new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true }));
 }
 
@@ -310,15 +324,16 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 
 	drawAnnotations({ previewNextVertex: true });
 });
-function createLabel(position) {
+function createLabel(loc, position) {
+	for (let j = 0; j < loc - activeLabels.length; j++)
+		activeLabels.push(null);
+
 	const label = document.createElement('div');
 	activeLabels.push(label);
 	label.className = 'label';
 	document.body.appendChild(label);
 	label.style.whiteSpace = 'pre-wrap';
-	labelUpdators.push(() => {
-		updateLabel(label, position);
-	});
+	labels.push({ label, position });
 	return label;
 }
 function polygonArea(vertices, projector) {
@@ -339,6 +354,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 
 	if (shape == 'rectangle') {
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
+			console.assert(i * 2 + 1 < vertexArray.length);
 			let p0 = vertexArray[i * 2].clone();
 			let p1 = vertexArray[i * 2 + 1].clone();
 			if (centerMode)
@@ -346,18 +362,18 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			const pc = lerp(p0, p1, 0.5);
 
 			let vertices;
+			let length = 0;
 			let area = 0;
 			if (screenspaceProjection) {
-				position = cameraRayIntersection(p0)?.point;
 				vertices = buildRectangleVertices(new THREE.Vector2(1, 0), p0, p1, width / height);
 				vertices = projectRectangle(vertices, cameraRayIntersection);
-				// area = 
+				length = pathLength(vertices);
+				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
 			} else {
 				const { point: p, normal: n } = closestPoint(pc);
-				const [toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
 				vertices = buildRectangleVertices(axis, pA, pC, width / height);
 				if (projectionMethod == 'normal')
-
 					vertices = projectRectangle(vertices, coord => {
 						const worldPos = add(toWorld(coord), mul(n, sub(camera.position, p).dot(n)));
 						raycaster.set(worldPos, neg(n));
@@ -365,15 +381,16 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 					});
 				else if (projectionMethod == 'distance')
 					vertices = projectRectangle(vertices, coord => closestPoint(toWorld(coord)));
+				length = pathLength(vertices);
+				area = polygonArea(vertices, toLocal);
 			}
 			annotations.push(createPath(vertices));
 
 			if (vertices && vertices.length > 0) {
-				if (i >= activeLabels.length)
-					createLabel(vertices[0]);
-				const length = pathLength(vertices).toFixed(2);
-				// const area = polygonArea(vertices, );
-				activeLabels[i].textContent = `length: ${length}\narea: ${area}`;
+				if (i >= activeLabels.length) {
+					createLabel(i, vertices[0]);
+				}
+				activeLabels[i].textContent = `length: ${length.toFixed(2)}\narea: ${area.toFixed(2)}`;
 			}
 		}
 	} else if (shape == 'circle') {
@@ -404,7 +421,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 
 			if (vertices && vertices.length > 0) {
 				if (i >= activeLabels.length)
-					createLabel(vertices[0]);
+					createLabel(i, vertices[0]);
 				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${area}`;
 			}
 		}
@@ -422,7 +439,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 
 			if (vertices && vertices.length > 0) {
 				if (i >= activeLabels.length)
-					createLabel(vertices[0]);
+					createLabel(i, vertices[0]);
 				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}`;
 			}
 		}
@@ -458,7 +475,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 
 			if (vertices && vertices.length > 0) {
 				if (0 >= activeLabels.length)
-					createLabel(vertices[0]);
+					createLabel(0, vertices[0]);
 				activeLabels[0].textContent = `length: ${pathLength(vertices).toFixed(2)}`;
 			}
 		}
