@@ -10,7 +10,6 @@ import {
 	getTriangleHitPointInfo
 } from 'three-mesh-bvh';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { remove } from 'three/examples/jsm/libs/tween.module.js';
 
 function add(a, b) {
 	return a.clone().add(b);
@@ -250,13 +249,6 @@ function updateLabels() {
 
 function addVertex(coord) {
 	const position = cameraRayIntersection(coord)?.point;
-	// if (gVertexArray.length > 0) {
-	// 	if (screenspaceProjection && gVertexArray[gVertexArray.length - 1] === coord)
-	// 		return;
-	// 	if (!screenspaceProjection && gVertexArray[gVertexArray.length - 1] === position)
-	// 		return;
-	// }
-
 	if (screenspaceProjection)
 		gVertexArray.push(coord);
 	else if (position)
@@ -344,6 +336,122 @@ function polygonArea(vertices, projector) {
 		area += v1.y * v0.x - v1.x * v0.y;
 	}
 	return Math.abs(area) / 2;
+}
+function bSpline(i, k, t, knobs) {
+	if (k == 1)
+		return knobs[i] <= t && t <= knobs[i + 1] ? 1 : 0;
+	else
+		return (t - knobs[i]) / (knobs[i + k - 1] - knobs[i]) * bSpline(i, k - 1, t, knobs) + (knobs[i + k]) / (knobs[i + k - 1] - knobs[i + 1]) * bSpline(i + 1, k - 1, t, knobs);
+}
+function deBoorHalf(k, n, t, d, closed) {
+	if (k == 0) {
+		if (closed) {
+			if (n < 0)
+				return d[d.length + n];
+			else
+				return d[n % d.length];
+		}
+		if (n < 0)
+			return d[0];
+		else if (n >= d.length)
+			return d[d.length - 1];
+		else
+			return d[n];
+	}
+	return add(mul(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), 1 - t), mul(deBoorHalf(k - 1, n, t / 2, d, closed), t));
+}
+function createSpline(method, vertexArray, nSegments, closed) {
+	if (method == 'catmull-rom') {
+		let curve = new THREE.CatmullRomCurve3(vertexArray);
+		curve.closed = closed;
+		return curve.getPoints(nSegments);
+	} else if (method == 'single-bezier') {
+		const vertices = [];
+		const input = [...vertexArray];
+		if (closed && vertexArray.length > 1) {
+			// input.push(add(add(vertexArray[2], mul(vertexArray[1], -4)), mul(vertexArray[0], 4)));
+			input.push(lerp(vertexArray[1], vertexArray[0], 2));
+			input.push(vertexArray[0]);
+		}
+		const N = input.length - 1;
+		let binom = [1];
+		for (let k = 1; k <= N; k++)
+			binom[k] = binom[k - 1] * (N - k + 1) / k;
+
+		for (let i = 0; i <= nSegments; i++) {
+			const t = i / nSegments;
+			let p = new THREE.Vector3();
+			for (let k = 0; k <= N; k++)
+				p.add(mul(input[k], binom[k] * Math.pow(1 - t, N - k) * Math.pow(t, k)));
+			vertices.push(p);
+		}
+		return vertices;
+	} else if (method == 'composite-bezier') {
+		const vertices = [];
+		const input = [];
+		if (vertexArray.length < 2)
+			return vertices;
+		const dir = sub(vertexArray[1], vertexArray[vertexArray.length - 1]);
+		if (vertexArray.length > 2)
+			dir.normalize();
+		if (closed) {
+			input.push(vertexArray[0]);
+			input.push(add(vertexArray[0], mul(dir, 0.1)));
+			input.push(vertexArray[1]);
+		} else {
+			input.push(vertexArray[0]);
+			input.push(vertexArray[0]);
+			input.push(vertexArray[1]);
+		}
+		for (let i = 2; i < vertexArray.length; i++) {
+			const p0 = input[input.length - 2];
+			const p1 = input[input.length - 1];
+			const p2 = lerp(p0, p1, 2);
+			const p3 = vertexArray[i];
+			input.push(p2);
+			input.push(p3);
+		}
+		if (closed) {
+			const p0 = input[input.length - 2];
+			const p1 = input[input.length - 1];
+			const p2 = lerp(p0, p1, 2);
+			const p3 = lerp(input[1], p2, 0.5);
+			input.push(p2);
+			input.push(p3);
+			input[0] = p3;
+		}
+
+		const N = 2;
+		let binom = [1];
+		for (let k = 1; k <= N; k++)
+			binom[k] = binom[k - 1] * (N - k + 1) / k;
+
+		for (let i = 1; i <= input.length - 2; i += N) {
+			const p0 = input[i - 1];
+			const p1 = input[i];
+			const p2 = input[i + 1];
+			const controls = [p0, p1, p2];
+			for (let i = 0; i <= 10; i++) {
+				const t = i / 10;
+				let p = new THREE.Vector3();
+				for (let k = 0; k <= N; k++)
+					p.add(mul(controls[k], binom[k] * Math.pow(1 - t, N - k) * Math.pow(t, k)));
+				vertices.push(p);
+			}
+		}
+		return vertices;
+	} else if (method == 'bspline') {
+		const degree = 2;
+		const n = vertexArray.length;
+		const f = t => deBoorHalf(degree, Math.trunc(t), t % 1, vertexArray, closed);
+		const vertices = [];
+		for (let i = 0; i < nSegments; i++) {
+			vertices.push(f((n + degree) * (i / nSegments)));
+		}
+		return vertices;
+	} else {
+		alert(`Unknown spline method: ${method}`);
+	}
 }
 function drawAnnotations({ previewNextVertex = false, completePath = false, shouldCommit = false }) {
 	removeQueue.forEach((x) => scene.remove(x));
@@ -443,7 +551,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}`;
 			}
 		}
-	} else if (shape == 'spline') {
+	} else if (['catmull-rom', 'single-bezier', 'composite-bezier', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
 				vertexArray = vertexArray.map(v => new THREE.Vector3(v.x, v.y, 0));
@@ -451,10 +559,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			for (let i = 0; i < vertexArray.length - 1; i++)
 				totalLength += sub(vertexArray[i], vertexArray[i + 1]).length();
 			const nSegments = segmentDensity * totalLength;
-			let curve = new THREE.CatmullRomCurve3(vertexArray);
-			if (completePath)
-				curve.closed = true;
-			let vertices = curve.getPoints(nSegments);
+			let vertices = nSegments == 0 ? [] : createSpline(shape, vertexArray, nSegments, completePath);
 			if (screenspaceProjection)
 				vertices = vertices.map(p => {
 					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
@@ -479,6 +584,8 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				activeLabels[0].textContent = `length: ${pathLength(vertices).toFixed(2)}`;
 			}
 		}
+	} else {
+		alert(`Unknown draw shape ${shape}`);
 	}
 
 	annotations.forEach((x) => scene.add(x));
@@ -562,12 +669,11 @@ document.getElementById("projection-method").value = projectionMethod
 document.getElementById("draw-shape").value = shape
 window.addEventListener('keydown', (e) => {
 	if (e.key == 'Enter') {
-		removeQueue.forEach((x) => scene.remove(x));
-		drawAnnotations({ completePath: true, shouldCommit: true }).forEach((x) => scene.add(x));
+		expectedVertexPointMesh = null;
+		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: true }).forEach((x) => scene.add(x));
 	} if (e.key == 'Escape') {
 		scene.remove(expectedVertexPointMesh);
-		removeQueue.forEach((x) => scene.remove(x));
-		drawAnnotations({ completePath: false, shouldCommit: true }).forEach((x) => scene.add(x));
+		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: true }).forEach((x) => scene.add(x));
 		commitAnnotations();
 	}
 });
