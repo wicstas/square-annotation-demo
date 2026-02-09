@@ -98,7 +98,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('capsule');
+const geometry = await sampleGeo('melody');
 const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
@@ -123,7 +123,7 @@ let cameraAxisAlign = true
 let projectionMethod = 'normal'
 let shape = "rectangle"
 const epsilon = 0.01;
-const segmentDensity = 1000;
+const segmentDensity = 3000;
 
 function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 	pA = pA.clone()
@@ -657,6 +657,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				}).filter(p => p);
 			else
 				vertices = vertices.map(p => {
+					return p;
 					const projection = closestPoint(p);
 					if (projection)
 						return add(projection.point, mul(projection.normal, epsilon));
