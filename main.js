@@ -10,7 +10,6 @@ import {
 	getTriangleHitPointInfo
 } from 'three-mesh-bvh';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { Vector2 } from 'three';
 
 function add(a, b, ...args) {
 	let result = a.clone().add(b);
@@ -98,7 +97,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('melody');
+const geometry = await sampleGeo('capsule');
 const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
@@ -123,7 +122,7 @@ let cameraAxisAlign = true
 let projectionMethod = 'normal'
 let shape = "rectangle"
 const epsilon = 0.01;
-const segmentDensity = 3000;
+const segmentDensity = 1000;
 
 function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 	pA = pA.clone()
@@ -344,12 +343,6 @@ function polygonArea(vertices, projector = x => x) {
 	totalAreaSquared += area * area / 2;
 	return Math.sqrt(totalAreaSquared);
 }
-function bSpline(i, k, t, knobs) {
-	if (k == 1)
-		return knobs[i] <= t && t <= knobs[i + 1] ? 1 : 0;
-	else
-		return (t - knobs[i]) / (knobs[i + k - 1] - knobs[i]) * bSpline(i, k - 1, t, knobs) + (knobs[i + k]) / (knobs[i + k - 1] - knobs[i + 1]) * bSpline(i + 1, k - 1, t, knobs);
-}
 function mod(i, n) {
 	if (i < 0)
 		return (n + i % n) % n;
@@ -367,23 +360,22 @@ function clamped(arr, i) {
 	else
 		return arr[i]
 }
-function deBoor(k, n, t, d, closed) {
-	if (k == 0) {
-		if (closed)
-			return cyclic(d, n);
-		else
-			return clamped(d, n);
-	}
-	return add(mul(deBoor(k - 1, n - 1, t / 2 + 0.5, d, closed), 1 - t), mul(deBoor(k - 1, n, t / 2, d, closed), t));
+function deBoor(k, r, j, t, d, closed) {
+	if (r == 0)
+		return closed ? cyclic(d, j) : clamped(d, j);
+	let t0 = j
+	let t1 = j + k - (r - 1);
+	const w = (t - t0) / (t1 - t0);
+	return lerp(deBoor(k, r - 1, j - 1, t, d, closed), deBoor(k, r - 1, j, t, d, closed), w);
 }
 function deBoorHalf(k, n, t, d, closed) {
-	if (k == 0) {
-		if (closed)
-			return cyclic(d, n);
-		else
-			return clamped(d, n);
-	}
-	return add(mul(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), 1 - t), mul(deBoorHalf(k - 1, n, t / 2, d, closed), t));
+	if (k == 0)
+		return closed ? cyclic(d, n) : clamped(d, n);
+	return lerp(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), deBoorHalf(k - 1, n, t / 2, d, closed), t);
+}
+function solve(a, b, c, d, b0, b1) {
+	return [add(mul(b0, d / (a * d - b * c)), mul(b1, -b / (a * d - b * c)))
+		, add(mul(b0, -c / (a * d - b * c)), mul(b1, a / (a * d - b * c)))];
 }
 function solveTridiagonal(a, b, d, crossEntry) {
 	const r = d.map(x => x.clone());
@@ -397,101 +389,58 @@ function solveTridiagonal(a, b, d, crossEntry) {
 		r[i] = mul(r[i], B);
 	r[n - 1] = mul(r[n - 1], A);
 
+	const coefs = new Array(n - 1).fill(0)
+	coefs[0] = A
+
 	let cc = A;
 	for (let i = 1; i < n - 1; i++) {
 		const c = 1 - cc * B;
 		r[i] = mul(sub(r[i], mul(r[i - 1], B)), 1 / c);
 		cc = B / c;
+		coefs[i] = cc;
 	}
 	const c = 1 - cc * A;
 	r[n - 1] = mul(sub(r[n - 1], mul(r[n - 2], A)), 1 / c);
-	for (let i = n - 2; i >= 0; i--) {
-		r[i] = sub(r[i], mul(r[i + 1], cc));
-		cc = (cc - B) / (B * cc);
-	}
+
+	for (let i = n - 2; i >= 0; i--)
+		r[i] = sub(r[i], mul(r[i + 1], coefs[i]));
 
 	if (crossEntry) {
-		const fac = 1 / (1 - A * A);
-		const r0 = add(mul(r[0], fac), mul(r[n - 1], -A * fac));
-		const rn_1 = add(mul(r[0], -A * fac), mul(r[n - 1], fac));
-		cc = A;
-		let q = A;
-		for (let i = 1; i < n - 1; i++) {
-			cc = B / (1 - cc * B);
-			q = -q * cc;
-			r[i] = sub(r[i], mul(rn_1, q));
+		const first_col = new Array(n).fill(0)
+		first_col[0] = 1
+		first_col[1] = B
+		first_col[n - 1] = A
+		const last_col = new Array(n).fill(0)
+		last_col[0] = A;
+		last_col[n - 2] = B;
+		last_col[n - 1] = 1;
+		for (let i = 1; i < n; i++) {
+			const C = i == n - 1 ? A : B;
+			first_col[i] = (first_col[i] - C * first_col[i - 1]) / (1 - coefs[i - 1] * C);
+			last_col[i] = (last_col[i] - C * last_col[i - 1]) / (1 - coefs[i - 1] * C);
 		}
-		q = A;
-		for (let i = n - 2; i >= 1; i--) {
-			q = -q * cc;
-			r[i] = sub(r[i], mul(r0, q));
-			cc = (cc - B) / (B * cc);
+		for (let i = n - 2; i >= 0; i--) {
+			first_col[i] = first_col[i] - coefs[i] * first_col[i + 1];
+			last_col[i] = last_col[i] - coefs[i] * last_col[i + 1];
 		}
+		const [r0, rn_1] = solve(first_col[0], last_col[0], first_col[n - 1], last_col[n - 1], r[0], r[n - 1]);
+		for (let i = 1; i < n - 1; i++)
+			r[i] = sub(r[i], add(mul(r0, first_col[i]), mul(rn_1, last_col[i])));
 		r[0] = r0;
 		r[n - 1] = rn_1;
 	}
 
 	return r;
 }
-// console.log(solveTridiagonal(4, 4, [new Vector2(1, 2), new Vector2(3, 4), new Vector2(5, 6)], true));
+// console.log(solveTridiagonal(4, 4, [new THREE.Vector2(1, 2), new THREE.Vector2(3, 4), new THREE.Vector2(5, 6)], true));
 
-function createSpline(method, vertexArray, nSegments, closed) {
+function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 	if (method == 'catmull-rom') {
 		let curve = new THREE.CatmullRomCurve3(vertexArray);
 		curve.closed = closed;
 		return curve.getPoints(nSegments);
-	} else if (method == 'single-bezier') {
-		const vertices = [];
-		const input = [...vertexArray];
-		if (closed && vertexArray.length > 1) {
-			// input.push(add(vertexArray[2], mul(vertexArray[1], -4), mul(vertexArray[0], 4)));
-			input.push(lerp(vertexArray[1], vertexArray[0], 2));
-			input.push(vertexArray[0]);
-		}
-		const N = input.length - 1;
-		let binom = [1];
-		for (let k = 1; k <= N; k++)
-			binom[k] = binom[k - 1] * (N - k + 1) / k;
-
-		for (let i = 0; i <= nSegments; i++) {
-			const t = i / nSegments;
-			let p = new THREE.Vector3();
-			for (let k = 0; k <= N; k++)
-				p.add(mul(input[k], binom[k] * Math.pow(1 - t, N - k) * Math.pow(t, k)));
-			vertices.push(p);
-		}
-		return vertices;
-	} else if (method == 'composite-bezier') {
-		if (closed)
-			alert("composite-bezier doesn't support smooth curve-closing");
-		const degree = 2;
-		let n = vertexArray.length;
-		if (closed) n = n + 1;
-		if (n <= 0)
-			return [];
-		const input = [];
-		input.push(vertexArray[0], vertexArray[0]);
-		for (let i = 1; i < n; i++)
-			input.push(lerp(cyclic(input, -2), cyclic(input, -1), 2), cyclic(vertexArray, i));
-
-		let binom = [1];
-		for (let k = 1; k <= degree; k++)
-			binom[k] = binom[k - 1] * (degree - k + 1) / k;
-
-		const vertices = [];
-		for (let i = 0; i < n - 1; i++) {
-			const nPoints = nSegments / (n - 1);
-			for (let j = 0; j < nPoints; j++) {
-				const t = j / nPoints;
-				let p = new THREE.Vector3();
-				for (let k = 0; k <= degree; k++)
-					p.add(mul(cyclic(input, i * 2 + k + 1), binom[k] * Math.pow(1 - t, degree - k) * Math.pow(t, k)));
-				vertices.push(p);
-			}
-		}
-		return vertices;
 	} else if (method == 'cubic') {
-		const input = [...vertexArray];
+		const input = vertexArray;
 		const n = input.length - 1;
 		if (n == 0)
 			return [];
@@ -512,12 +461,20 @@ function createSpline(method, vertexArray, nSegments, closed) {
 		const D = solveTridiagonal(closed ? 4 : 2, 4, Y, closed);
 
 		const vertices = []
-		const nPoints = nSegments / n;
+		let totalLength = 0;
+		const lengths = [];
+		if (!uniformSpace)
+			for (let s = 0; s < (closed ? n + 1 : n); s++) {
+				const r = sub(cyclic(input, s), cyclic(input, s + 1)).length();
+				lengths.push(r);
+				totalLength += r;
+			}
 		for (let s = 0; s < (closed ? n + 1 : n); s++) {
 			const a = cyclic(input, s);
 			const b = D[s];
 			const c = sub(mul(sub(cyclic(input, s + 1), cyclic(input, s)), 3), add(cyclic(D, s + 1), mul(D[s], 2)));
 			const d = sub(cyclic(input, s + 1), add(a, b, c));
+			const nPoints = uniformSpace ? nSegments / n : lengths[s] * nSegments / totalLength;
 			for (let i = 0; i < nPoints; i++) {
 				const t = i / nPoints;
 				vertices.push(add(a, mul(b, t), mul(c, t * t), mul(d, t * t * t)));
@@ -528,10 +485,13 @@ function createSpline(method, vertexArray, nSegments, closed) {
 	else if (method == 'bspline') {
 		const degree = 3;
 		const n = vertexArray.length;
+		if (n < 1)
+			return [];
+		// const f = t => deBoor(degree, degree, Math.trunc(t), t, vertexArray, closed);
 		const f = t => deBoorHalf(degree, Math.trunc(t), t % 1, vertexArray, closed);
 		const vertices = [];
 		for (let i = 0; i < nSegments; i++) {
-			vertices.push(f((n + degree) * (i / nSegments)));
+			vertices.push(f(lerp(0, n + degree, i / nSegments)));
 		}
 		return vertices;
 	} else {
@@ -638,7 +598,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${polygonArea(vertices).toFixed(2)}`;
 			}
 		}
-	} else if (['catmull-rom', 'single-bezier', 'composite-bezier', 'cubic', 'bspline'].includes(shape)) {
+	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
 				vertexArray = vertexArray.map(v => new THREE.Vector3(v.x, v.y, 0));
@@ -646,8 +606,11 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			for (let i = 0; i < vertexArray.length - 1; i++)
 				totalLength += sub(vertexArray[i], vertexArray[i + 1]).length();
 			const nSegments = segmentDensity * totalLength;
-			let vertices = nSegments == 0 ? [] : createSpline(shape, vertexArray, nSegments, completePath);
-			if (screenspaceProjection)
+			if (nSegments == 0)
+				return [];
+			let vertices = [];
+			if (screenspaceProjection) {
+				vertices = createSpline(shape, vertexArray, nSegments, completePath);
 				vertices = vertices.map(p => {
 					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
 					if (projection)
@@ -655,15 +618,15 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 					else
 						return null;
 				}).filter(p => p);
-			else
+			}
+			else {
+				vertices = createSpline(shape, vertexArray, Math.sqrt(nSegments), completePath, true);
 				vertices = vertices.map(p => {
-					return p;
 					const projection = closestPoint(p);
-					if (projection)
-						return add(projection.point, mul(projection.normal, epsilon));
-					else
-						return null;
-				}).filter(p => p);
+					return add(projection.point, mul(projection.normal, epsilon));
+				});
+				vertices = createSpline(shape, vertices, nSegments, completePath);
+			}
 			annotations.push(createPath(vertices));
 
 			if (vertices && vertices.length > 0) {
@@ -757,12 +720,11 @@ document.getElementById("projection-method").value = projectionMethod
 document.getElementById("draw-shape").value = shape
 window.addEventListener('keydown', (e) => {
 	if (e.key == 'Enter') {
-		expectedVertexPointMesh = null;
-		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: true }).forEach((x) => scene.add(x));
+		scene.remove(expectedVertexPointMesh);
+		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	} if (e.key == 'Escape') {
 		scene.remove(expectedVertexPointMesh);
-		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: true }).forEach((x) => scene.add(x));
-		commitAnnotations();
+		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	}
 });
 
