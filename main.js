@@ -367,6 +367,15 @@ function clamped(arr, i) {
 	else
 		return arr[i]
 }
+function deBoor(k, n, t, d, closed) {
+	if (k == 0) {
+		if (closed)
+			return cyclic(d, n);
+		else
+			return clamped(d, n);
+	}
+	return add(mul(deBoor(k - 1, n - 1, t / 2 + 0.5, d, closed), 1 - t), mul(deBoor(k - 1, n, t / 2, d, closed), t));
+}
 function deBoorHalf(k, n, t, d, closed) {
 	if (k == 0) {
 		if (closed)
