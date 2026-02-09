@@ -333,14 +333,16 @@ function createLabel(loc, position) {
 	return label;
 }
 function polygonArea(vertices, projector = x => x) {
+	let totalAreaSquared = 0;
 	let area = 0;
-	for (let i = 0; i < vertices.length - 1; i++) {
-		const v0 = projector(vertices[i]);
-		const v1 = projector(vertices[i + 1]);
-		// area += v1.y * v0.x - v1.x * v0.y;
-		area += v0.clone().cross(v1).length();
-	}
-	return Math.abs(area) / 2;
+	for (let d = 0; d < 3; d++)
+		for (let i = 0; i < vertices.length - 1; i++) {
+			const v0 = projector(vertices[i]);
+			const v1 = projector(vertices[i + 1]);
+			area += v1.getComponent((d + 1) % 3) * v0.getComponent(d % 3) - v0.getComponent((d + 1) % 3) * v1.getComponent(d % 3);
+		}
+	totalAreaSquared += area * area / 2;
+	return Math.sqrt(totalAreaSquared);
 }
 function bSpline(i, k, t, knobs) {
 	if (k == 1)
@@ -369,7 +371,7 @@ function deBoorHalf(k, n, t, d, closed) {
 	if (k == 0) {
 		if (closed)
 			return cyclic(d, n);
-		if (n < 0)
+		else
 			return clamped(d, n);
 	}
 	return add(mul(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), 1 - t), mul(deBoorHalf(k - 1, n, t / 2, d, closed), t));
@@ -422,7 +424,7 @@ function solveTridiagonal(a, b, d, crossEntry) {
 
 	return r;
 }
-console.log(solveTridiagonal(4, 4, [new Vector2(1, 2), new Vector2(3, 4), new Vector2(5, 6)], true));
+// console.log(solveTridiagonal(4, 4, [new Vector2(1, 2), new Vector2(3, 4), new Vector2(5, 6)], true));
 
 function createSpline(method, vertexArray, nSegments, closed) {
 	if (method == 'catmull-rom') {
@@ -515,7 +517,7 @@ function createSpline(method, vertexArray, nSegments, closed) {
 		return vertices;
 	}
 	else if (method == 'bspline') {
-		const degree = 2;
+		const degree = 3;
 		const n = vertexArray.length;
 		const f = t => deBoorHalf(degree, Math.trunc(t), t % 1, vertexArray, closed);
 		const vertices = [];
@@ -590,7 +592,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
 			} else {
 				const { point: p, normal: n } = closestPoint(pc);
-				const [toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
 				if (projectionMethod == 'normal')
 					vertices = projectCircle(pA, pC, 1, coord => {
 						const worldPos = add(toWorld(coord), proj(n, sub(camera.position, p)));
