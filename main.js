@@ -97,7 +97,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('capsule');
+const geometry = await sampleGeo('melody');
 const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
 geometry.computeBoundsTree();
@@ -105,6 +105,10 @@ scene.add(mesh);
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 100);
 scene.add(ambientLight);
+const box = new THREE.Box3().setFromObject(mesh);
+const size = new THREE.Vector3();
+box.getSize(size);
+const sceneScaleRef = 1 / 3 * (box.max.z - box.min.z + box.max.y - box.min.y + box.max.x - box.min.x)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(dpr)
@@ -122,7 +126,7 @@ let cameraAxisAlign = true
 let projectionMethod = 'normal'
 let shape = "rectangle"
 const epsilon = 0.01;
-const segmentDensity = 1000;
+const segmentDensity = 500 / sceneScaleRef;
 
 function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 	pA = pA.clone()
@@ -251,17 +255,17 @@ function updateLabels() {
 }
 
 function addVertex(coord) {
-	const position = cameraRayIntersection(coord)?.point;
+	const intersection = cameraRayIntersection(coord);
 	if (screenspaceProjection)
 		gVertexArray.push(coord);
-	else if (position)
-		gVertexArray.push(position);
+	else if (intersection)
+		gVertexArray.push(intersection);
 
-	if (position) {
+	if (intersection) {
 		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		const mesh = new THREE.Mesh(geometry, material);
-		mesh.position.copy(position);
+		mesh.position.copy(intersection.point);
 		scene.add(mesh);
 	}
 }
@@ -302,18 +306,18 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 		return;
 	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
-	const position = cameraRayIntersection(coord)?.point;
+	const intersection = cameraRayIntersection(coord);
 	if (screenspaceProjection)
 		expectedNextVertex = coord;
-	else if (position)
-		expectedNextVertex = position;
+	else
+		expectedNextVertex = intersection;
 
-	if (position) {
+	if (intersection) {
 		scene.remove(expectedVertexPointMesh);
 		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		expectedVertexPointMesh = new THREE.Mesh(geometry, material);
-		expectedVertexPointMesh.position.copy(position);
+		expectedVertexPointMesh.position.copy(intersection.point);
 		scene.add(expectedVertexPointMesh);
 	}
 
@@ -436,14 +440,16 @@ function solveTridiagonal(a, b, d, crossEntry) {
 
 function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 	if (method == 'catmull-rom') {
+		if (vertexArray.length < 2)
+			return [];
 		let curve = new THREE.CatmullRomCurve3(vertexArray);
 		curve.closed = closed;
 		return curve.getPoints(nSegments);
 	} else if (method == 'cubic') {
+		if (vertexArray.length < 2)
+			return [];
 		const input = vertexArray;
 		const n = input.length - 1;
-		if (n == 0)
-			return [];
 		const Y = [];
 		if (closed)
 			Y.push(mul(sub(input[1], input[n]), 3));
@@ -483,15 +489,18 @@ function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 		return vertices;
 	}
 	else if (method == 'bspline') {
+		if (vertexArray.length < 2)
+			return [];
 		const degree = 3;
 		const n = vertexArray.length;
-		if (n < 1)
-			return [];
-		// const f = t => deBoor(degree, degree, Math.trunc(t), t, vertexArray, closed);
-		const f = t => deBoorHalf(degree, Math.trunc(t), t % 1, vertexArray, closed);
+		const f = t => deBoor(degree, degree, Math.trunc(t), t, vertexArray, closed);
+		// const f = t => deBoorHalf(degree, Math.trunc(t), t % 1, vertexArray, closed);
 		const vertices = [];
 		for (let i = 0; i < nSegments; i++) {
-			vertices.push(f(lerp(0, n + degree, i / nSegments)));
+			if (closed)
+				vertices.push(f(lerp(0, n, i / nSegments)));
+			else
+				vertices.push(f(lerp(0, n + degree, i / nSegments)));
 		}
 		return vertices;
 	} else {
@@ -501,11 +510,28 @@ function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 function drawAnnotations({ previewNextVertex = false, completePath = false, shouldCommit = false }) {
 	removeQueue.forEach((x) => scene.remove(x));
 
-	let vertexArray = [...gVertexArray];
-	if (previewNextVertex) vertexArray.push(expectedNextVertex);
+	let vertexArray;
+	let normalArray;
+
+	if (screenspaceProjection) {
+		vertexArray = [...gVertexArray];
+		if (previewNextVertex && expectedNextVertex) {
+			vertexArray.push(expectedNextVertex);
+		}
+	} else {
+		vertexArray = gVertexArray.map(x => x.point);
+		normalArray = gVertexArray.map(x => x.normal);
+		if (previewNextVertex && expectedNextVertex) {
+			vertexArray.push(expectedNextVertex.point);
+			normalArray.push(expectedNextVertex.normal);
+		}
+	}
+
 	const annotations = []
 
 	if (shape == 'rectangle') {
+		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
+			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
 			console.assert(i * 2 + 1 < vertexArray.length);
 			let p0 = vertexArray[i * 2].clone();
@@ -523,7 +549,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				length = pathLength(vertices);
 				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
 			} else {
-				const { point: p, normal: n } = closestPoint(pc);
+				const { point: p, normal: n } = centerMode ? { point: vertexArray[i * 2], normal: normalArray[i * 2] } : closestPoint(pc);
 				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
 				vertices = buildRectangleVertices(axis, pA, pC, width / height);
 				if (projectionMethod == 'normal')
@@ -547,6 +573,8 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			}
 		}
 	} else if (shape == 'circle') {
+		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
+			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
 			let p0 = vertexArray[i * 2].clone();
 			let p1 = vertexArray[i * 2 + 1].clone();
@@ -560,7 +588,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				vertices = projectCircle(p0, p1, width / height, cameraRayIntersection);
 				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
 			} else {
-				const { point: p, normal: n } = closestPoint(pc);
+				const { point: p, normal: n } = centerMode ? { point: vertexArray[i * 2], normal: normalArray[i * 2] } : closestPoint(pc);
 				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
 				if (projectionMethod == 'normal')
 					vertices = projectCircle(pA, pC, 1, coord => {
@@ -581,23 +609,25 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			}
 		}
 	} else if (shape == 'polygon') {
+		let vertices = [];
+
 		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
 			let p0 = vertexArray[i].clone();
 			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
 
-			let vertices;
-			if (screenspaceProjection)
-				vertices = projectLineSegment(p0, p1, cameraRayIntersection);
-			else
-				vertices = projectLineSegment(p0, p1, closestPoint);
-			annotations.push(createPath(vertices));
+			let segment = screenspaceProjection ? projectLineSegment(p0, p1, cameraRayIntersection) : projectLineSegment(p0, p1, closestPoint);
+			vertices.push(...segment);
 
-			if (vertices && vertices.length > 0) {
+			if (segment.length > 0) {
 				if (i >= activeLabels.length)
-					createLabel(i, vertices[0]);
-				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${polygonArea(vertices).toFixed(2)}`;
+					createLabel(i, segment[0]);
+				activeLabels[i].textContent = `length: ${pathLength(segment).toFixed(2)}`;
 			}
 		}
+		annotations.push(createPath(vertices));
+		if (activeLabels.length > 0)
+			activeLabels[0].textContent += `\narea: ${polygonArea(vertices).toFixed(2)}`;
+
 	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
@@ -605,12 +635,15 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			let totalLength = 0;
 			for (let i = 0; i < vertexArray.length - 1; i++)
 				totalLength += sub(vertexArray[i], vertexArray[i + 1]).length();
+			if (closed)
+				totalLength += sub(vertexArray[0], cyclic(vertexArray, -1)).length();
 			const nSegments = segmentDensity * totalLength;
+			console.log(nSegments);
 			if (nSegments == 0)
 				return [];
 			let vertices = [];
 			if (screenspaceProjection) {
-				vertices = createSpline(shape, vertexArray, nSegments, completePath);
+				vertices = createSpline(shape, vertexArray, nSegments, completePath, false);
 				vertices = vertices.map(p => {
 					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
 					if (projection)
@@ -620,12 +653,12 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				}).filter(p => p);
 			}
 			else {
-				vertices = createSpline(shape, vertexArray, Math.sqrt(nSegments), completePath, true);
+				vertices = createSpline(shape, vertexArray, Math.pow(nSegments, 2 / 3), completePath, false);
 				vertices = vertices.map(p => {
 					const projection = closestPoint(p);
 					return add(projection.point, mul(projection.normal, epsilon));
 				});
-				vertices = createSpline(shape, vertices, nSegments, completePath);
+				vertices = createSpline(shape, vertices, nSegments, completePath, true);
 			}
 			annotations.push(createPath(vertices));
 
@@ -724,6 +757,9 @@ window.addEventListener('keydown', (e) => {
 		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	} if (e.key == 'Escape') {
 		scene.remove(expectedVertexPointMesh);
+		if (gVertexArray.length == 1) {
+			activeLabels.forEach(x => x.remove());
+		}
 		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	}
 });
