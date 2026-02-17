@@ -1,16 +1,15 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
 	computeBoundsTree, disposeBoundsTree,
-	computeBatchedBoundsTree, disposeBatchedBoundsTree, acceleratedRaycast,
+	acceleratedRaycast,
 	getTriangleHitPointInfo
 } from 'three-mesh-bvh';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 function add(a, b, ...args) {
 	let result = a.clone().add(b);
 	for (const x of args)
@@ -51,40 +50,35 @@ function coordinateSystem(n, up) {
 
 	return [x, y, n.clone()]
 }
-async function sampleGeo(name) {
-	if (name == 'melody') {
-		const loader = new GLTFLoader();
-		const gltf = await loader.loadAsync('/public/melody.glb');
-		const geometries = [];
-		gltf.scene.traverse((obj) => {
-			if (obj.isMesh) {
-				const geom = obj.geometry.clone();
-				geom.applyMatrix4(obj.matrixWorld);
-				geometries.push(geom);
-			}
-		});
-		return mergeGeometries(
-			geometries,
-			false
-		).scale(0.1, 0.1, 0.1);
-	}
+async function sampleGeo(name, scale) {
+	if (name == 'sphere')
+		return new THREE.SphereGeometry(1, 16, 16);
 	if (name == 'knot')
 		return new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
 	if (name == 'torus')
 		return new THREE.TorusGeometry(2, 1, 32)
 	if (name == 'capsule')
 		return new THREE.CapsuleGeometry(1, 1, 30, 40, 1);
-	else
-		alert(`Unknown geometry name ${name}`);
+
+	if (scale == null) scale = 1.0
+	const gltf = await new GLTFLoader().loadAsync(`/public/${name}.glb`);
+	const geometries = [];
+	gltf.scene.traverse((obj) => {
+		if (obj.isMesh) {
+			const geom = obj.geometry.clone();
+			geom.applyMatrix4(obj.matrixWorld);
+			geometries.push(geom);
+		}
+	});
+	return mergeGeometries(
+		geometries,
+		false
+	).scale(scale, scale, scale);
 }
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
-
-THREE.BatchedMesh.prototype.computeBoundsTree = computeBatchedBoundsTree;
-THREE.BatchedMesh.prototype.disposeBoundsTree = disposeBatchedBoundsTree;
-THREE.BatchedMesh.prototype.raycast = acceleratedRaycast;
 
 let width = window.innerWidth;
 let height = window.innerHeight;
@@ -94,16 +88,142 @@ window.addEventListener('resize', onWindowResize);
 
 const scene = new THREE.Scene();
 
-const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
+const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
 camera.position.set(0, 0, 5);
 
-const geometry = await sampleGeo('melody');
-const material = new THREE.MeshNormalMaterial();
-const mesh = new THREE.Mesh(geometry, material);
+let geometry1 = await sampleGeo('bunny');
+geometry1.deleteAttribute('normal');
+geometry1.deleteAttribute('tangent');
+geometry1.deleteAttribute('uv');
+
+const tolerance = 1e-5;
+const merged = mergeVertices(geometry1, tolerance);
+geometry1.dispose();
+geometry1 = merged;
+
+const p = geometry1.attributes['position'].array
+const v = []
+for (let i = 0; i < p.length; i += 3)
+	v.push(new Vector(p[i], p[i + 1], p[i + 2]))
+const polygonSoup = { v, f: [...geometry1.index.array] }
+const gpMesh = new Mesh()
+console.assert(gpMesh.build(polygonSoup))
+const gpGeometry = new Geometry(gpMesh, polygonSoup.v, true)
+const heatMethod = new HeatMethod(gpGeometry)
+let V = gpMesh.vertices.length;
+const delta = DenseMatrix.zeros(V, 1);
+
+const geometry = new THREE.BufferGeometry();
+const positions = new Float32Array(V * 3);
+const normals = new Float32Array(V * 3);
+const colors = new Float32Array(V * 3);
+const ORANGE = new Vector(1.0, 0.5, 0.0);
+for (let v of gpMesh.vertices) {
+	let i = v.index;
+	let position = gpGeometry.positions[v];
+	positions[3 * i + 0] = position.x;
+	positions[3 * i + 1] = position.y;
+	positions[3 * i + 2] = position.z;
+
+	let normal = gpGeometry.vertexNormalEquallyWeighted(v);
+	normals[3 * i + 0] = normal.x;
+	normals[3 * i + 1] = normal.y;
+	normals[3 * i + 2] = normal.z;
+
+	colors[3 * i + 0] = ORANGE.x;
+	colors[3 * i + 1] = ORANGE.y;
+	colors[3 * i + 2] = ORANGE.z;
+}
+let F = gpMesh.faces.length;
+const indices = new Uint32Array(F * 3);
+for (let f of gpMesh.faces) {
+	let i = 0;
+	for (let v of f.adjacentVertices())
+		indices[3 * f.index + i++] = v.index;
+}
+
+// set geometry
+geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 geometry.computeBoundsTree();
+
+function computeDistance(v) {
+	let i = heatMethod.vertexIndex[v];
+	delta.set(1, i, 0);
+	let phi = heatMethod.compute(delta);
+
+	let maxPhi = 0;
+	for (let i = 0; i < phi.nRows(); i++) {
+		maxPhi = Math.max(phi.get(i, 0), maxPhi);
+		// console.log(phi.nRows(), phi.nCols(), delta.get(i, 0), maxPhi)
+	}
+
+	let j = 0;
+	for (let v of gpMesh.vertices) {
+		let i = v.index;
+		j++;
+		const color = colormap(phi.get(i, 0), 0, maxPhi, hot);
+		colors[3 * i + 0] = color.x;
+		colors[3 * i + 1] = color.y;
+		colors[3 * i + 2] = color.z;
+	}
+	geometry.attributes.color.needsUpdate = true;
+	scene.add(createIsolineMesh(phi, 0.1))
+}
+const material = new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
+const mesh = new THREE.Mesh(geometry, material);
 scene.add(mesh);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 100);
+function createIsolineMesh(phi, distance) {
+	const positions = [];
+	for (let f of gpMesh.faces) {
+		const segment = [];
+
+		for (let h of f.adjacentHalfedges()) {
+			const v1 = h.vertex;
+			const v2 = h.twin.vertex;
+			const i = heatMethod.vertexIndex[v1];
+			const j = heatMethod.vertexIndex[v2];
+			const d1 = phi.get(i, 0);
+			const d2 = phi.get(j, 0);
+			const r = (distance - d1) / (d2 - d1);
+
+
+			if (0 < r && r < 1) {
+				let p1 = gpGeometry.positions[v1];
+				let p2 = gpGeometry.positions[v2];
+				let p = p1.plus(p2.minus(p1).times(r));
+
+				segment.push(p);
+			}
+		}
+
+		for (let i = 0; i < segment.length - 1; i++)
+			for (let j = i + 1; j < segment.length; j++) {
+				const p1 = segment[i];
+				const p2 = segment[j];
+				positions.push(p1.x);
+				positions.push(p1.y);
+				positions.push(p1.z);
+				positions.push(p2.x);
+				positions.push(p2.y);
+				positions.push(p2.z);
+			}
+	}
+
+	const geometry = new THREE.BufferGeometry();
+	geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+	const mesh = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+		color: 0x000000
+	}));
+	mesh.renderOrder = 1;
+	mesh.frustumCulled = false;
+	return mesh;
+}
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 scene.add(ambientLight);
 const box = new THREE.Box3().setFromObject(mesh);
 const size = new THREE.Vector3();
@@ -281,19 +401,23 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		removeQueue.forEach((x) => scene.remove(x));
-		const { annotations, shouldCommit } = drawAnnotations({});
-		if (shouldCommit)
-			removeQueue = annotations;
+		drawAnnotations({});
 	}
 
 	released = false;
 	moved = false;
 });
+let first = true;
 renderer.domElement.addEventListener('pointerup', (e) => {
 	if ((controls.enabled && !moved) || (!controls.enabled && moved)) {
 		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		drawAnnotations({});
+
+		const intersection = cameraRayIntersection(coord);
+		if (first)
+			computeDistance(gpMesh.vertices[intersection.face.a])
+		first = false
 	}
 	released = true;
 });
@@ -530,6 +654,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 	const annotations = []
 
 	if (shape == 'rectangle') {
+		return;
 		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
@@ -626,7 +751,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 		}
 		annotations.push(createPath(vertices));
 		if (activeLabels.length > 0)
-			activeLabels[0].textContent += `\narea: ${polygonArea(vertices).toFixed(2)}`;
+			activeLabels[0].textContent = `\narea: ${polygonArea(vertices).toFixed(2)}`;
 
 	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
