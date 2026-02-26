@@ -10,11 +10,16 @@ import {
 	getTriangleHitPointInfo
 } from 'three-mesh-bvh';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const { Vector2, Vector3 } = THREE;
 function add(a, b, ...args) {
 	let result = a.clone().add(b);
 	for (const x of args)
 		result.add(x);
 	return result;
+}
+function dot(a, b) {
+	return a.dot(b);
 }
 function sub(a, b) {
 	return a.clone().sub(b);
@@ -41,12 +46,12 @@ function lerp(x, y, t) {
 function coordinateSystem(n, up) {
 	if (up === undefined)
 		up = Math.abs(n.y) < 0.9
-			? new THREE.Vector3(0, 1, 0)
-			: new THREE.Vector3(1, 0, 0);
+			? new Vector3(0, 1, 0)
+			: new Vector3(1, 0, 0);
 
-	const x = new THREE.Vector3().crossVectors(up, n).normalize();
+	const x = new Vector3().crossVectors(up, n).normalize();
 
-	const y = new THREE.Vector3().crossVectors(n, x).normalize();
+	const y = new Vector3().crossVectors(n, x).normalize();
 
 	return [x, y, n.clone()]
 }
@@ -109,15 +114,223 @@ const polygonSoup = { v, f: [...geometry1.index.array] }
 const gpMesh = new Mesh()
 console.assert(gpMesh.build(polygonSoup))
 const gpGeometry = new Geometry(gpMesh, polygonSoup.v, true)
-const heatMethod = new HeatMethod(gpGeometry)
-let V = gpMesh.vertices.length;
-const delta = DenseMatrix.zeros(V, 1);
+
+class CachedGeodesicMethod {
+	constructor(geometry) {
+		this.geometry = geometry
+		this.heatMethod = new HeatMethod(geometry)
+		this.delta = DenseMatrix.zeros(geometry.mesh.vertices.length, 1);
+	}
+	computePhi(source) {
+		if (source != this.prevSource) {
+			this.prevSource = source
+
+			const a = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.a]]
+			const b = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.b]]
+			const c = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.c]]
+			for (let j = 0; j < this.delta.nRows(); j++)
+				this.delta.set(0, j, 0);
+			this.delta.set(source.barycoord.x, a, 0);
+			this.delta.set(source.barycoord.y, b, 0);
+			this.delta.set(source.barycoord.z, c, 0);
+			this.phi = this.heatMethod.compute(this.delta);
+		}
+	}
+	creatGeodesicCircle(source, ref) {
+		this.computePhi(source)
+		const distance = this.phi.get(this.heatMethod.vertexIndex[this.geometry.mesh.vertices[ref.face.a]], 0)
+		const positions = [];
+		for (let f of this.geometry.mesh.faces) {
+			const segment = [];
+
+			for (let h of f.adjacentHalfedges()) {
+				const v1 = h.vertex;
+				const v2 = h.twin.vertex;
+				const i = this.heatMethod.vertexIndex[v1];
+				const j = this.heatMethod.vertexIndex[v2];
+				const d1 = this.phi.get(i, 0);
+				const d2 = this.phi.get(j, 0);
+				const r = (distance - d1) / (d2 - d1);
+
+
+				if (0 <= r && r <= 1) {
+					let p1 = this.geometry.positions[v1];
+					let p2 = this.geometry.positions[v2];
+					segment.push(p1.plus(p2.minus(p1).times(r)));
+				}
+			}
+
+			for (let i = 0; i < segment.length - 1; i++)
+				for (let j = i + 1; j < segment.length; j++) {
+					const p1 = segment[i];
+					const p2 = segment[j];
+					positions.push(p1.x);
+					positions.push(p1.y);
+					positions.push(p1.z);
+					positions.push(p2.x);
+					positions.push(p2.y);
+					positions.push(p2.z);
+				}
+		}
+
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+		const mesh = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+			color: 0x000000
+		}));
+		mesh.renderOrder = 1;
+		mesh.frustumCulled = false;
+		return mesh;
+	}
+	barycentric(p, a, b, c) {
+		if (typeof a == 'number')
+			return a * p.x + b * p.y + c * (1 - p.x - p.y)
+		const r = a.times(p.x).plus(b.times(p.y).plus(c.times(1 - p.x - p.y)))
+		return [r.x, r.y, r.z]
+	}
+	lerp(t, a, b) {
+		const r = a.times(1 - t).plus(b.times(t))
+		return [r.x, r.y, r.z]
+	}
+	creatGeodesicLine(source, ref) {
+		this.computePhi(source)
+		const positions = [];
+		let v0 = this.geometry.mesh.vertices[ref.face.a]
+		let v1 = this.geometry.mesh.vertices[ref.face.b]
+		let v2 = this.geometry.mesh.vertices[ref.face.c]
+		let V0 = this.geometry.mesh.vertices[source.face.a]
+		let V1 = this.geometry.mesh.vertices[source.face.b]
+		let V2 = this.geometry.mesh.vertices[source.face.c]
+		const setV = new Set([V0, V1, V2])
+		let phi0 = this.phi.get(this.heatMethod.vertexIndex[v0], 0)
+		let phi1 = this.phi.get(this.heatMethod.vertexIndex[v1], 0)
+		let phi2 = this.phi.get(this.heatMethod.vertexIndex[v2], 0)
+		positions.push(...this.barycentric(ref.barycoord, this.geometry.positions[v0], this.geometry.positions[v1], this.geometry.positions[v2]))
+		let f0 = (phi0 + phi1) / 2
+		let f1 = (phi1 + phi2) / 2
+		let f2 = (phi0 + phi2) / 2
+		let fmin = Math.min(f0, f1, f2)
+		let halfedge;
+		if (fmin == f0) {
+			positions.push(...this.lerp(0.5, this.geometry.positions[v0], this.geometry.positions[v1]))
+			for (const edge of v0.adjacentHalfedges()) {
+				console.assert(edge.vertex == v0)
+				if (edge.next.vertex == v1)
+					halfedge = edge.prev.vertex == v2 ? edge : edge.twin
+			}
+		}
+		else if (fmin == f1) {
+			positions.push(...this.lerp(0.5, this.geometry.positions[v1], this.geometry.positions[v2]))
+			for (const edge of v1.adjacentHalfedges()) {
+				console.assert(edge.vertex == v1)
+				if (edge.next.vertex == v2)
+					halfedge = edge.prev.vertex == v0 ? edge : edge.twin
+			}
+		}
+		else {
+			positions.push(...this.lerp(0.5, this.geometry.positions[v0], this.geometry.positions[v2]))
+			for (const edge of v2.adjacentHalfedges()) {
+				console.assert(edge.vertex == v2)
+				if (edge.next.vertex == v0)
+					halfedge = edge.prev.vertex == v1 ? edge : edge.twin
+			}
+		}
+		console.assert(halfedge != null)
+		halfedge = halfedge.twin
+
+		while (true) {
+			let phi0 = this.phi.get(this.heatMethod.vertexIndex[halfedge.vertex], 0)
+			let phi1 = this.phi.get(this.heatMethod.vertexIndex[halfedge.next.vertex], 0)
+			let phi2 = this.phi.get(this.heatMethod.vertexIndex[halfedge.prev.vertex], 0)
+			positions.push(...this.lerp(0.5, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
+			let f0 = (phi0 + phi1) / 2
+			let f1 = (phi1 + phi2) / 2
+			let f2 = (phi0 + phi2) / 2
+			let fmin = Math.min(f1, f2)
+			const setv = new Set([halfedge.vertex, halfedge.next.vertex, halfedge.prev.vertex])
+			if (setV.isSubsetOf(setv) && setv.isSubsetOf(setV)) {
+				positions.push(...this.barycentric(source.barycoord, this.geometry.positions[V0], this.geometry.positions[V1], this.geometry.positions[V2]))
+				break
+			}
+			if (fmin > f0) {
+				// alert(`${fmin} ${f0}`)
+				break
+			}
+			if (f1 < f2) {
+				positions.push(...this.lerp(0.5, this.geometry.positions[halfedge.next.vertex], this.geometry.positions[halfedge.prev.vertex]))
+				halfedge = halfedge.next.twin
+			} else {
+				positions.push(...this.lerp(0.5, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.prev.vertex]))
+				halfedge = halfedge.prev.twin
+			}
+		}
+		console.log(positions)
+
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+		const mesh = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+			depthTest: false,
+			depthWrite: true,
+			color: 0xFF0000
+		}));
+		mesh.renderOrder = 1;
+		mesh.frustumCulled = false;
+		return mesh;
+	}
+	creatGeodesicLine1(source, ref) {
+		this.computePhi(source)
+		const positions = [];
+		let p = new Vector2(ref.barycoord.x, ref.barycoord.y)
+		let halfedge = this.geometry.mesh.vertices[ref.face.a].halfedge
+		let candidates = [halfedge.next, halfedge.prev]
+		candidates.forEach(edge => {
+			if (this.phi.get(this.heatMethod.vertexIndex[edge.vertex], 0) > this.phi.get(this.heatMethod.vertexIndex[halfedge.vertex], 0))
+				halfedge = edge
+		})
+		while (true) {
+			const f1 = this.phi.get(this.heatMethod.vertexIndex[halfedge.vertex], 0)
+			const f2 = this.phi.get(this.heatMethod.vertexIndex[halfedge.next.vertex], 0)
+			const f3 = this.phi.get(this.heatMethod.vertexIndex[halfedge.prev.vertex], 0)
+			const d = new Vector2(f1 - f3, f1 - f2)
+			if (d.x < 0)
+				break
+			const edges = [
+				{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+				{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
+			let hit = 0
+			for (const { edge, p0, p1 } of edges) {
+				const [t, k] = solve1(d.x, p0.x - p1.x, d.y, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+				if (t == null) alert("err")
+				if (k >= 0 && k <= 1) {
+					p = new Vector2(0, 1 - k);
+					halfedge = edge.twin;
+					hit++
+				}
+			}
+			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
+			if (!hit)
+				break
+		}
+		console.log(positions)
+
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+		const mesh = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+			depthTest: false,
+			depthWrite: true,
+			color: 0xFF0000
+		}));
+		mesh.renderOrder = 1;
+		mesh.frustumCulled = false;
+		return mesh;
+	}
+}
+const geodesicMethod = new CachedGeodesicMethod(gpGeometry)
 
 const geometry = new THREE.BufferGeometry();
-const positions = new Float32Array(V * 3);
-const normals = new Float32Array(V * 3);
-const colors = new Float32Array(V * 3);
-const ORANGE = new Vector(1.0, 0.5, 0.0);
+const positions = new Float32Array(v.length * 3);
+const normals = new Float32Array(v.length * 3);
 for (let v of gpMesh.vertices) {
 	let i = v.index;
 	let position = gpGeometry.positions[v];
@@ -129,10 +342,6 @@ for (let v of gpMesh.vertices) {
 	normals[3 * i + 0] = normal.x;
 	normals[3 * i + 1] = normal.y;
 	normals[3 * i + 2] = normal.z;
-
-	colors[3 * i + 0] = ORANGE.x;
-	colors[3 * i + 1] = ORANGE.y;
-	colors[3 * i + 2] = ORANGE.z;
 }
 let F = gpMesh.faces.length;
 const indices = new Uint32Array(F * 3);
@@ -141,92 +350,23 @@ for (let f of gpMesh.faces) {
 	for (let v of f.adjacentVertices())
 		indices[3 * f.index + i++] = v.index;
 }
-
-// set geometry
 geometry.setIndex(new THREE.BufferAttribute(indices, 1));
 geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 geometry.computeBoundsTree();
 
-function computeDistance(v) {
-	let i = heatMethod.vertexIndex[v];
-	delta.set(1, i, 0);
-	let phi = heatMethod.compute(delta);
-
-	let maxPhi = 0;
-	for (let i = 0; i < phi.nRows(); i++) {
-		maxPhi = Math.max(phi.get(i, 0), maxPhi);
-		// console.log(phi.nRows(), phi.nCols(), delta.get(i, 0), maxPhi)
-	}
-
-	let j = 0;
-	for (let v of gpMesh.vertices) {
-		let i = v.index;
-		j++;
-		const color = colormap(phi.get(i, 0), 0, maxPhi, hot);
-		colors[3 * i + 0] = color.x;
-		colors[3 * i + 1] = color.y;
-		colors[3 * i + 2] = color.z;
-	}
-	geometry.attributes.color.needsUpdate = true;
-	scene.add(createIsolineMesh(phi, 0.1))
-}
-const material = new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
+const material = new THREE.MeshNormalMaterial({ polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
 const mesh = new THREE.Mesh(geometry, material);
 scene.add(mesh);
-
-function createIsolineMesh(phi, distance) {
-	const positions = [];
-	for (let f of gpMesh.faces) {
-		const segment = [];
-
-		for (let h of f.adjacentHalfedges()) {
-			const v1 = h.vertex;
-			const v2 = h.twin.vertex;
-			const i = heatMethod.vertexIndex[v1];
-			const j = heatMethod.vertexIndex[v2];
-			const d1 = phi.get(i, 0);
-			const d2 = phi.get(j, 0);
-			const r = (distance - d1) / (d2 - d1);
-
-
-			if (0 < r && r < 1) {
-				let p1 = gpGeometry.positions[v1];
-				let p2 = gpGeometry.positions[v2];
-				let p = p1.plus(p2.minus(p1).times(r));
-
-				segment.push(p);
-			}
-		}
-
-		for (let i = 0; i < segment.length - 1; i++)
-			for (let j = i + 1; j < segment.length; j++) {
-				const p1 = segment[i];
-				const p2 = segment[j];
-				positions.push(p1.x);
-				positions.push(p1.y);
-				positions.push(p1.z);
-				positions.push(p2.x);
-				positions.push(p2.y);
-				positions.push(p2.z);
-			}
-	}
-
-	const geometry = new THREE.BufferGeometry();
-	geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-	const mesh = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
-		color: 0x000000
-	}));
-	mesh.renderOrder = 1;
-	mesh.frustumCulled = false;
-	return mesh;
-}
+// scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({
+// 	color: 0x000000,
+// 	linewidth: 0.75
+// })))
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 scene.add(ambientLight);
 const box = new THREE.Box3().setFromObject(mesh);
-const size = new THREE.Vector3();
+const size = new Vector3();
 box.getSize(size);
 const sceneScaleRef = 1 / 3 * (box.max.z - box.min.z + box.max.y - box.min.y + box.max.x - box.min.x)
 
@@ -244,7 +384,7 @@ let centerMode = false
 let screenspaceProjection = false
 let cameraAxisAlign = true
 let projectionMethod = 'normal'
-let shape = "rectangle"
+let shape = "polygon"
 const epsilon = 0.01;
 const segmentDensity = 500 / sceneScaleRef;
 
@@ -261,8 +401,8 @@ function buildRectangleVertices(axis, pA, pC, aspect = 1) {
 		pB = add(pA, proj(axis, sub(pC, pA)));
 		pD = sub(add(pA, pC), pB);
 	} else {
-		pB = new THREE.Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
-		pD = new THREE.Vector2(pA.x + (A + B) / 2, pA.y - (A - B) / 2);
+		pB = new Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
+		pD = new Vector2(pA.x + (A + B) / 2, pA.y - (A - B) / 2);
 	}
 	const vertexArray = [pA, pB, pC, pD]
 	vertexArray.forEach(x => { x.y *= aspect });
@@ -304,7 +444,7 @@ function projectCircle(pA, pB, aspect, projector) {
 	const nSegments = rX * 2 * Math.PI * segmentDensity;
 	for (let i = 0; i <= nSegments; i++) {
 		const t = i / nSegments * Math.PI * 2;
-		const coord = new THREE.Vector2(center.x + rX * Math.cos(t), center.y + rY * Math.sin(t));
+		const coord = new Vector2(center.x + rX * Math.cos(t), center.y + rY * Math.sin(t));
 		const projection = projector(coord);
 		if (projection)
 			points.push(add(projection.point, mul(projection.normal, epsilon)));
@@ -332,9 +472,9 @@ function cameraRayIntersection(coord) {
 }
 function buildPlanarSystem(p, n, ...points) {
 	const tbn = coordinateSystem(n);
-	const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
+	const toLocal = (v) => { return new Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
 	const toWorld = (coord) => { return add(p, mul(tbn[0], coord.x), mul(tbn[1], coord.y)); };
-	const axis = toLocal(new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)).normalize();
+	const axis = toLocal(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)).normalize();
 	return [toLocal, toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 function pathLength(points) {
@@ -382,7 +522,7 @@ function addVertex(coord) {
 		gVertexArray.push(intersection);
 
 	if (intersection) {
-		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const geometry = new THREE.SphereGeometry(0.01, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		const mesh = new THREE.Mesh(geometry, material);
 		mesh.position.copy(intersection.point);
@@ -398,7 +538,7 @@ function createPath(points) {
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
 	if (!controls.enabled) {
-		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		let coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		removeQueue.forEach((x) => scene.remove(x));
 		drawAnnotations({});
@@ -407,17 +547,11 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 	released = false;
 	moved = false;
 });
-let first = true;
 renderer.domElement.addEventListener('pointerup', (e) => {
 	if ((controls.enabled && !moved) || (!controls.enabled && moved)) {
-		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		let coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		drawAnnotations({});
-
-		const intersection = cameraRayIntersection(coord);
-		if (first)
-			computeDistance(gpMesh.vertices[intersection.face.a])
-		first = false
 	}
 	released = true;
 });
@@ -428,7 +562,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 	moved = true;
 	if (!released && controls.enabled)
 		return;
-	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+	const coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
 	const intersection = cameraRayIntersection(coord);
 	if (screenspaceProjection)
@@ -438,7 +572,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 
 	if (intersection) {
 		scene.remove(expectedVertexPointMesh);
-		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const geometry = new THREE.SphereGeometry(0.01, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		expectedVertexPointMesh = new THREE.Mesh(geometry, material);
 		expectedVertexPointMesh.position.copy(intersection.point);
@@ -502,8 +636,17 @@ function deBoorHalf(k, n, t, d, closed) {
 	return lerp(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), deBoorHalf(k - 1, n, t / 2, d, closed), t);
 }
 function solve(a, b, c, d, b0, b1) {
-	return [add(mul(b0, d / (a * d - b * c)), mul(b1, -b / (a * d - b * c)))
-		, add(mul(b0, -c / (a * d - b * c)), mul(b1, a / (a * d - b * c)))];
+	const det = 1 / (a * d - b * c);
+	return [add(mul(b0, d * det), mul(b1, -b * det))
+		, add(mul(b0, -c * det), mul(b1, a * det))];
+}
+function solve1(a, b, c, d, b0, b1) {
+	let det = a * d - b * c;
+	if (det == 0)
+		return []
+	else
+		det = 1 / det
+	return [b0 * d * det + b1 * -b * det, b0 * -c * det + b1 * a * det];
 }
 function solveTridiagonal(a, b, d, crossEntry) {
 	const r = d.map(x => x.clone());
@@ -560,7 +703,6 @@ function solveTridiagonal(a, b, d, crossEntry) {
 
 	return r;
 }
-// console.log(solveTridiagonal(4, 4, [new THREE.Vector2(1, 2), new THREE.Vector2(3, 4), new THREE.Vector2(5, 6)], true));
 
 function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 	if (method == 'catmull-rom') {
@@ -634,28 +776,14 @@ function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 function drawAnnotations({ previewNextVertex = false, completePath = false, shouldCommit = false }) {
 	removeQueue.forEach((x) => scene.remove(x));
 
-	let vertexArray;
-	let normalArray;
-
-	if (screenspaceProjection) {
-		vertexArray = [...gVertexArray];
-		if (previewNextVertex && expectedNextVertex) {
-			vertexArray.push(expectedNextVertex);
-		}
-	} else {
-		vertexArray = gVertexArray.map(x => x.point);
-		normalArray = gVertexArray.map(x => x.normal);
-		if (previewNextVertex && expectedNextVertex) {
-			vertexArray.push(expectedNextVertex.point);
-			normalArray.push(expectedNextVertex.normal);
-		}
-	}
+	const vertexArray = [...gVertexArray];
+	if (previewNextVertex && expectedNextVertex)
+		vertexArray.push(expectedNextVertex);
 
 	const annotations = []
 
 	if (shape == 'rectangle') {
-		return;
-		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
+		if (gVertexArray.length == 2)
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
 			console.assert(i * 2 + 1 < vertexArray.length);
@@ -669,7 +797,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			let length = 0;
 			let area = 0;
 			if (screenspaceProjection) {
-				vertices = buildRectangleVertices(new THREE.Vector2(1, 0), p0, p1, width / height);
+				vertices = buildRectangleVertices(new Vector2(1, 0), p0, p1, width / height);
 				vertices = projectRectangle(vertices, cameraRayIntersection);
 				length = pathLength(vertices);
 				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
@@ -698,79 +826,43 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			}
 		}
 	} else if (shape == 'circle') {
-		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
+		if (gVertexArray.length == 2)
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
-			let p0 = vertexArray[i * 2].clone();
-			let p1 = vertexArray[i * 2 + 1].clone();
-			if (centerMode)
-				p0 = sub(mul(p0, 2), p1);
-			const pc = lerp(p0, p1, 0.5);
-			let area = 0;
-
-			let vertices;
-			if (screenspaceProjection) {
-				vertices = projectCircle(p0, p1, width / height, cameraRayIntersection);
-				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
-			} else {
-				const { point: p, normal: n } = centerMode ? { point: vertexArray[i * 2], normal: normalArray[i * 2] } : closestPoint(pc);
-				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
-				if (projectionMethod == 'normal')
-					vertices = projectCircle(pA, pC, 1, coord => {
-						const worldPos = add(toWorld(coord), proj(n, sub(camera.position, p)));
-						raycaster.set(worldPos, neg(n));
-						return arrayToOptional(raycaster.intersectObject(mesh, false));
-					});
-				else if (projectionMethod == 'distance')
-					vertices = projectCircle(pA, pC, 1, coord => closestPoint(toWorld(coord)));
-				area = polygonArea(vertices);
-			}
-			annotations.push(createPath(vertices));
-
-			if (vertices && vertices.length > 0) {
-				if (i >= activeLabels.length)
-					createLabel(i, vertices[0]);
-				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${area.toFixed(2)}`;
-			}
+			let p0 = vertexArray[i * 2]; vertexArray
+			let p1 = vertexArray[i * 2 + 1];
+			annotations.push(geodesicMethod.creatGeodesicCircle(p0, p1));
 		}
 	} else if (shape == 'polygon') {
-		let vertices = [];
-
 		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
-			let p0 = vertexArray[i].clone();
-			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
+			let p0 = vertexArray[i];
+			let p1 = vertexArray[(i + 1) % vertexArray.length];
 
-			let segment = screenspaceProjection ? projectLineSegment(p0, p1, cameraRayIntersection) : projectLineSegment(p0, p1, closestPoint);
-			vertices.push(...segment);
-
-			if (segment.length > 0) {
-				if (i >= activeLabels.length)
-					createLabel(i, segment[0]);
-				activeLabels[i].textContent = `length: ${pathLength(segment).toFixed(2)}`;
-			}
+			// let segment = screenspaceProjection ? projectLineSegment(p0, p1, cameraRayIntersection) : projectLineSegment(p0, p1, closestPoint);
+			// vertices.push(...segment);
+			annotations.push(geodesicMethod.creatGeodesicLine(p0, p1));
 		}
-		annotations.push(createPath(vertices));
-		if (activeLabels.length > 0)
-			activeLabels[0].textContent = `\narea: ${polygonArea(vertices).toFixed(2)}`;
+		// annotations.push(createPath(vertices));
+		// if (activeLabels.length > 0)
+		// 	activeLabels[0].textContent = `\narea: ${polygonArea(vertices).toFixed(2)}`;
 
 	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
-				vertexArray = vertexArray.map(v => new THREE.Vector3(v.x, v.y, 0));
+				vertexArray = vertexArray.map(v => new Vector3(v.x, v.y, 0));
 			let totalLength = 0;
 			for (let i = 0; i < vertexArray.length - 1; i++)
 				totalLength += sub(vertexArray[i], vertexArray[i + 1]).length();
 			if (closed)
 				totalLength += sub(vertexArray[0], cyclic(vertexArray, -1)).length();
 			const nSegments = segmentDensity * totalLength;
-			console.log(nSegments);
 			if (nSegments == 0)
 				return [];
 			let vertices = [];
 			if (screenspaceProjection) {
 				vertices = createSpline(shape, vertexArray, nSegments, completePath, false);
 				vertices = vertices.map(p => {
-					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
+					const projection = cameraRayIntersection(new Vector2(p.x, p.y));
 					if (projection)
 						return add(projection.point, mul(projection.normal, epsilon));
 					else
@@ -802,8 +894,6 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 		commitAnnotations();
 	else
 		removeQueue = annotations;
-
-	return annotations;
 }
 
 function setupToggle(id, getValue, setValue, key) {
@@ -879,13 +969,13 @@ document.getElementById("draw-shape").value = shape
 window.addEventListener('keydown', (e) => {
 	if (e.key == 'Enter') {
 		scene.remove(expectedVertexPointMesh);
-		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
+		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false });
 	} if (e.key == 'Escape') {
 		scene.remove(expectedVertexPointMesh);
 		if (gVertexArray.length == 1) {
 			activeLabels.forEach(x => x.remove());
 		}
-		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
+		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false });
 	}
 });
 
