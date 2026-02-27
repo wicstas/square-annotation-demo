@@ -96,7 +96,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
 camera.position.set(0, 0, 5);
 
-let geometry1 = await sampleGeo('bunny');
+let geometry1 = await sampleGeo('duck');
 geometry1.deleteAttribute('normal');
 geometry1.deleteAttribute('tangent');
 geometry1.deleteAttribute('uv');
@@ -125,11 +125,11 @@ class CachedGeodesicMethod {
 		if (source != this.prevSource) {
 			this.prevSource = source
 
+			for (let j = 0; j < this.delta.nRows(); j++)
+				this.delta.set(0, j, 0);
 			const a = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.a]]
 			const b = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.b]]
 			const c = this.heatMethod.vertexIndex[this.geometry.mesh.vertices[source.face.c]]
-			for (let j = 0; j < this.delta.nRows(); j++)
-				this.delta.set(0, j, 0);
 			this.delta.set(source.barycoord.x, a, 0);
 			this.delta.set(source.barycoord.y, b, 0);
 			this.delta.set(source.barycoord.z, c, 0);
@@ -308,7 +308,7 @@ class CachedGeodesicMethod {
 				{ v0: v3, v1: v1, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
 			for (const { v0, v1, p0, p1 } of edges) {
 				const [t, k] = solve1(d.x, p0.x - p1.x, d.y, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-				if (k >= 0 && k <= 1) {
+				if (t >= 0 && k >= 0 && k <= 1) {
 					p = new Vector2(0, 1 - k);
 					for (const edge of v0.adjacentHalfedges())
 						if (edge.next.vertex == v1)
@@ -340,12 +340,8 @@ class CachedGeodesicMethod {
 			const cosine = vp1.minus(vp2).unit().dot(vp1.minus(vp3).unit())
 			const sine = Math.sqrt(1 - cosine * cosine)
 			let d = [f1 - f3, f1 - f2]
-			let d0 = d;
 			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
-			let d1 = d;
 			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
-			let d2 = d;
-			console.log(d0, d1, d2)
 			d = new Vector2(d[0], d[1])
 			if (d.x < 0)
 				break
@@ -356,7 +352,7 @@ class CachedGeodesicMethod {
 			let hit = false
 			for (const { edge, p0, p1 } of edges) {
 				const [t, k] = solve1(d.x, p0.x - p1.x, d.y, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-				if (k >= 0 && k <= 1) {
+				if (t >= 0 && k >= 0 && k <= 1) {
 					p = new Vector2(0, 1 - k);
 					halfedge = edge.twin;
 					hit = true
@@ -366,7 +362,7 @@ class CachedGeodesicMethod {
 				alert('no hit')
 			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
 		}
-		// console.log(positions)
+		console.log(positions)
 
 		const geometry = new THREE.BufferGeometry();
 		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
@@ -412,10 +408,10 @@ geometry.computeBoundsTree();
 const material = new THREE.MeshNormalMaterial({ polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
 const mesh = new THREE.Mesh(geometry, material);
 scene.add(mesh);
-// scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({
-// 	color: 0x000000,
-// 	linewidth: 0.75
-// })))
+scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({
+	color: 0x000000,
+	linewidth: 0.75
+})))
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 scene.add(ambientLight);
@@ -576,7 +572,7 @@ function addVertex(coord) {
 		gVertexArray.push(intersection);
 
 	if (intersection) {
-		const geometry = new THREE.SphereGeometry(0.01, 8, 8);
+		const geometry = new THREE.SphereGeometry(0.003, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		const mesh = new THREE.Mesh(geometry, material);
 		mesh.position.copy(intersection.point);
@@ -626,7 +622,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 
 	if (intersection) {
 		scene.remove(expectedVertexPointMesh);
-		const geometry = new THREE.SphereGeometry(0.01, 8, 8);
+		const geometry = new THREE.SphereGeometry(0.003, 8, 8);
 		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 		expectedVertexPointMesh = new THREE.Mesh(geometry, material);
 		expectedVertexPointMesh.position.copy(intersection.point);
