@@ -192,7 +192,7 @@ class CachedGeodesicMethod {
 		const r = a.times(1 - t).plus(b.times(t))
 		return [r.x, r.y, r.z]
 	}
-	creatGeodesicLine(source, ref) {
+	creatGeodesicLine1(source, ref) {
 		this.computePhi(source)
 		const positions = [];
 		let v0 = this.geometry.mesh.vertices[ref.face.a]
@@ -277,42 +277,96 @@ class CachedGeodesicMethod {
 		mesh.frustumCulled = false;
 		return mesh;
 	}
-	creatGeodesicLine1(source, ref) {
+	creatGeodesicLine(source, ref) {
 		this.computePhi(source)
 		const positions = [];
-		let p = new Vector2(ref.barycoord.x, ref.barycoord.y)
-		let halfedge = this.geometry.mesh.vertices[ref.face.a].halfedge
-		let candidates = [halfedge.next, halfedge.prev]
-		candidates.forEach(edge => {
-			if (this.phi.get(this.heatMethod.vertexIndex[edge.vertex], 0) > this.phi.get(this.heatMethod.vertexIndex[halfedge.vertex], 0))
-				halfedge = edge
-		})
+		let p = new Vector2(ref.barycoord.z, ref.barycoord.y)
+		let halfedge
+
+		{
+			let v1 = this.geometry.mesh.vertices[ref.face.a]
+			let v2 = this.geometry.mesh.vertices[ref.face.b]
+			let v3 = this.geometry.mesh.vertices[ref.face.c]
+			const f1 = this.phi.get(this.heatMethod.vertexIndex[v1], 0)
+			const f2 = this.phi.get(this.heatMethod.vertexIndex[v2], 0)
+			const f3 = this.phi.get(this.heatMethod.vertexIndex[v3], 0)
+			const vp1 = this.geometry.positions[v1]
+			const vp2 = this.geometry.positions[v2]
+			const vp3 = this.geometry.positions[v3]
+			positions.push(...this.barycentric(ref.barycoord, vp1, vp2, vp3))
+			const l2 = vp1.minus(vp2).norm()
+			const l3 = vp1.minus(vp3).norm()
+			const cosine = vp1.minus(vp2).unit().dot(vp1.minus(vp3).unit())
+			const sine = Math.sqrt(1 - cosine * cosine)
+			let d = [f1 - f3, f1 - f2]
+			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
+			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
+			d = new Vector2(d[0], d[1])
+			const edges = [
+				{ v0: v1, v1: v2, p0: new Vector2(0, 0), p1: new Vector2(0, 1) },
+				{ v0: v2, v1: v3, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+				{ v0: v3, v1: v1, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+			for (const { v0, v1, p0, p1 } of edges) {
+				const [t, k] = solve1(d.x, p0.x - p1.x, d.y, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+				if (k >= 0 && k <= 1) {
+					p = new Vector2(0, 1 - k);
+					for (const edge of v0.adjacentHalfedges())
+						if (edge.next.vertex == v1)
+							halfedge = edge.twin
+					for (const edge of v1.adjacentHalfedges())
+						if (edge.next.vertex == v0)
+							halfedge = edge
+					break
+				}
+			}
+
+			if (halfedge == null)
+				alert("no halfedge")
+			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
+		}
+
 		while (true) {
-			const f1 = this.phi.get(this.heatMethod.vertexIndex[halfedge.vertex], 0)
-			const f2 = this.phi.get(this.heatMethod.vertexIndex[halfedge.next.vertex], 0)
-			const f3 = this.phi.get(this.heatMethod.vertexIndex[halfedge.prev.vertex], 0)
-			const d = new Vector2(f1 - f3, f1 - f2)
+			const v1 = halfedge.vertex
+			const v2 = halfedge.next.vertex
+			const v3 = halfedge.prev.vertex
+			const f1 = this.phi.get(this.heatMethod.vertexIndex[v1], 0)
+			const f2 = this.phi.get(this.heatMethod.vertexIndex[v2], 0)
+			const f3 = this.phi.get(this.heatMethod.vertexIndex[v3], 0)
+			const vp1 = this.geometry.positions[v1]
+			const vp2 = this.geometry.positions[v2]
+			const vp3 = this.geometry.positions[v3]
+			const l2 = vp1.minus(vp2).norm()
+			const l3 = vp1.minus(vp3).norm()
+			const cosine = vp1.minus(vp2).unit().dot(vp1.minus(vp3).unit())
+			const sine = Math.sqrt(1 - cosine * cosine)
+			let d = [f1 - f3, f1 - f2]
+			let d0 = d;
+			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
+			let d1 = d;
+			d = solve1(1 * l2, cosine * l3, 0, sine * l3, d[0], d[1])
+			let d2 = d;
+			console.log(d0, d1, d2)
+			d = new Vector2(d[0], d[1])
 			if (d.x < 0)
 				break
 			const edges = [
 				{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
 				{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
-			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
-			let hit = 0
+			positions.push(...this.lerp(p.y, vp1, vp2))
+			let hit = false
 			for (const { edge, p0, p1 } of edges) {
 				const [t, k] = solve1(d.x, p0.x - p1.x, d.y, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-				if (t == null) alert("err")
 				if (k >= 0 && k <= 1) {
 					p = new Vector2(0, 1 - k);
 					halfedge = edge.twin;
-					hit++
+					hit = true
 				}
 			}
-			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
 			if (!hit)
-				break
+				alert('no hit')
+			positions.push(...this.lerp(p.y, this.geometry.positions[halfedge.vertex], this.geometry.positions[halfedge.next.vertex]))
 		}
-		console.log(positions)
+		// console.log(positions)
 
 		const geometry = new THREE.BufferGeometry();
 		geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
@@ -643,9 +697,8 @@ function solve(a, b, c, d, b0, b1) {
 function solve1(a, b, c, d, b0, b1) {
 	let det = a * d - b * c;
 	if (det == 0)
-		return []
-	else
-		det = 1 / det
+		alert("Degenerate case")
+	det = 1 / det
 	return [b0 * d * det + b1 * -b * det, b0 * -c * det + b1 * a * det];
 }
 function solveTridiagonal(a, b, d, crossEntry) {
