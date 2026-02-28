@@ -25,6 +25,12 @@ function add(a, b, ...args) {
 function dot(a, b) {
 	return a.dot(b);
 }
+function cross(a, b) {
+	return a.clone().cross(b);
+}
+function normalize(a) {
+	return a.clone().normalize();
+}
 function sub(a, b) {
 	return a.clone().sub(b);
 }
@@ -46,6 +52,9 @@ function lerp(x, y, t) {
 		return (1 - t) * x + t * y;
 	else
 		return x.clone().lerp(y, t);
+}
+function barycentric(b, x, y, z) {
+	return add(mul(x, b.x), mul(y, b.y), mul(z, b.z))
 }
 function coordinateSystem(n, up) {
 	if (up === undefined)
@@ -108,26 +117,26 @@ geometry.computeBoundingSphere()
 const scaleFactor = 1 / geometry.boundingSphere.radius;
 geometry.scale(scaleFactor, scaleFactor, scaleFactor);
 geometry.computeBoundsTree();
-
-const mergeGeometrySource = new THREE.BufferGeometry()
-mergeGeometrySource.setIndex(geometry.getIndex())
-mergeGeometrySource.setAttribute('position', geometry.attributes['position'])
-
-const tolerance = 1e-5;
-const merged = mergeVertices(mergeGeometrySource, tolerance);
-const p = merged.attributes['position'].array
+geometry.computeVertexNormals()
+let baseGeometry = new THREE.BufferGeometry()
+baseGeometry.setIndex(geometry.getIndex())
+baseGeometry.setAttribute('position', geometry.getAttribute('position'))
+const merged = mergeVertices(baseGeometry, 1e-5);
+baseGeometry.dispose();
+baseGeometry = merged;
+baseGeometry.computeVertexNormals()
+const p = baseGeometry.attributes['position'].array
 const v = []
 for (let i = 0; i < p.length; i += 3)
 	v.push(new Vector(p[i], p[i + 1], p[i + 2]))
-const polygonSoup = { v, f: [...merged.index.array] }
+const polygonSoup = { v, f: [...baseGeometry.index.array] }
 const gpMesh = new Mesh()
 console.assert(gpMesh.build(polygonSoup))
-const gpGeometry = new Geometry(gpMesh, polygonSoup.v, true)
-
+const gpGeometry = new Geometry(gpMesh, polygonSoup.v, false)
 const material = new THREE.MeshNormalMaterial({ polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
 const mesh = new THREE.Mesh(geometry, material);
+const baseMesh = new THREE.Mesh(baseGeometry, material);
 scene.add(mesh);
-
 scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x000000 })))
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 1);
@@ -217,7 +226,7 @@ function closestPoint(p) {
 }
 function cameraRayIntersection(coord) {
 	raycaster.setFromCamera(coord, camera);
-	const intersects = raycaster.intersectObject(mesh, false);
+	const intersects = raycaster.intersectObject(baseMesh, false);
 	if (intersects.length > 0)
 		return intersects[0];
 	else
@@ -387,6 +396,18 @@ function solve(a, b, c, d, b0, b1) {
 	return [add(mul(b0, d * det), mul(b1, -b * det))
 		, add(mul(b0, -c * det), mul(b1, a * det))];
 }
+function solveScalar(a, b, c, d, b0, b1) {
+	const det = 1 / (a * d - b * c);
+	return [b0 * d * det + b1 * -b * det,
+	b0 * -c * det + b1 * a * det];
+}
+function to3(v) {
+	return new Vector3(v.x, v.y, v.z)
+}
+// Project x onto v and w
+function proj2(x, v, w) {
+	return solveScalar(dot(v, v), dot(v, w), dot(v, w), dot(w, w), dot(x, v), dot(x, w))
+}
 function solveTridiagonal(a, b, d, crossEntry) {
 	const r = d.map(x => x.clone());
 	const n = r.length;
@@ -518,32 +539,90 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 	if (shape == 'rectangle') {
 		if (gVertexArray.length == 2)
 			shouldCommit = true;
+		const vertices = []
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
-			let p0 = vertexArray[i * 2].point;
-			let p1 = vertexArray[i * 2 + 1].point;
-			const pc = lerp(p0, p1, 0.5);
-
-			// let { point: p, normal: n } = closestPoint(pc);
-			const p = pc;
-			const n = add(vertexArray[i * 2].normal, vertexArray[i * 2 + 1].normal).normalize()
-			const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
-			let vertices = buildRectangleVertices(axis, pA, pC, width / height);
-			vertices = projectRectangle(vertices, coord => {
-				const worldPos = add(toWorld(coord), proj(n, sub(camera.position, p)));
-				raycaster.set(worldPos, neg(n));
-				return arrayToOptional(raycaster.intersectObject(mesh, false));
-			});
-			const length = pathLength(vertices);
-			const area = polygonArea(vertices);
-			annotations.push(createPath(vertices));
-
-			if (vertices && vertices.length > 0) {
-				if (i >= activeLabels.length) {
-					createLabel(i, vertices[0]);
+			const va = vertexArray[i * 2]
+			const vb = vertexArray[i * 2 + 1]
+			const vna = normalize(add(va.normal, vb.normal))
+			const vnb = normalize(sub(va.point, vb.point))
+			const cutN = normalize(cross(vna, vnb))
+			const v0 = gpGeometry.mesh.vertices[va.face.a]
+			const v1 = gpGeometry.mesh.vertices[va.face.b]
+			const v2 = gpGeometry.mesh.vertices[va.face.c]
+			const vp0 = to3(gpGeometry.positions[v0])
+			const vp1 = to3(gpGeometry.positions[v1])
+			const vp2 = to3(gpGeometry.positions[v2])
+			vertices.push(barycentric(va.barycoord, vp0, vp1, vp2))
+			let facea, faceb
+			let p = new Vector2(0, 0)
+			for (const v of [v0, v1, v2]) {
+				for (const f of v.adjacentFaces()) {
+					const fvs = [f.halfedge.vertex, f.halfedge.next.vertex, f.halfedge.prev.vertex]
+					for (let i = 0; i < 3; i++)
+						if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
+							p.x = va.barycoord.getComponent((2 - i) % 3)
+							p.y = va.barycoord.getComponent((1 - i) % 3)
+							facea = f
+						}
 				}
-				activeLabels[i].textContent = `length: ${length.toFixed(2)}\narea: ${area.toFixed(2)}`;
 			}
+			console.log(va, facea)
+
+			let halfedge = facea.halfedge
+			const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
+			if (dot(dir, sub(vb.point, va.point)) < 0)
+				dir = neg(dir)
+			const u = gpGeometry.vector(halfedge.prev).negated()
+			const v = gpGeometry.vector(halfedge)
+			const [dx, dy] = proj2(dir, u, v)
+			const edges = [
+				{ edge: halfedge, p0: new Vector2(0, 0), p1: new Vector2(0, 1) },
+				{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+				{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+			let next_py = 0
+			for (const { edge, p0, p1 } of edges) {
+				const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+				if (t > 0 && k >= 0 && k <= 1) {
+					vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
+					next_py = 1 - k
+					halfedge = edge.twin
+				}
+			}
+			p.x = 0
+			p.y = next_py
+			console.assert(vertices.length == 2)
+
+			for (let i = 0; i < 10; i++) {
+				const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
+				if (dot(dir, sub(vb.point, va.point)) < 0)
+					dir = neg(dir)
+				const u = gpGeometry.vector(halfedge.prev).negated()
+				const v = gpGeometry.vector(halfedge)
+				const [dx, dy] = proj2(dir, u, v)
+				const edges = [
+					{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+					{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+				let i = 0
+				let next_py = 0
+				for (const { edge, p0, p1 } of edges) {
+					const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+					if (k >= 0 && k <= 1) {
+						i++
+						vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
+						next_py = 1 - k
+						halfedge = edge.twin
+					}
+				}
+				p.y = next_py
+				console.assert(i == 1)
+			}
+
+
+			// console.log(vertices)
+
 		}
+
+		annotations.push(createPath(vertices));
 	} else if (shape == 'circle') {
 		if (gVertexArray.length == 2)
 			shouldCommit = true;
