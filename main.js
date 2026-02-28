@@ -549,27 +549,20 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			const v0 = gpGeometry.mesh.vertices[va.face.a]
 			const v1 = gpGeometry.mesh.vertices[va.face.b]
 			const v2 = gpGeometry.mesh.vertices[va.face.c]
-			const vp0 = to3(gpGeometry.positions[v0])
-			const vp1 = to3(gpGeometry.positions[v1])
-			const vp2 = to3(gpGeometry.positions[v2])
-			vertices.push(barycentric(va.barycoord, vp0, vp1, vp2))
-			let facea, faceb
-			let p = new Vector2(0, 0)
-			for (const v of [v0, v1, v2]) {
-				for (const f of v.adjacentFaces()) {
-					const fvs = [f.halfedge.vertex, f.halfedge.next.vertex, f.halfedge.prev.vertex]
-					for (let i = 0; i < 3; i++)
-						if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
-							p.x = va.barycoord.getComponent((2 - i) % 3)
-							p.y = va.barycoord.getComponent((1 - i) % 3)
-							facea = f
-						}
-				}
-			}
-			console.log(va, facea)
+			const vb0 = gpGeometry.mesh.vertices[vb.face.a]
+			const vb1 = gpGeometry.mesh.vertices[vb.face.b]
+			const vb2 = gpGeometry.mesh.vertices[vb.face.c]
+			vertices.push(barycentric(va.barycoord, to3(gpGeometry.positions[v0]), to3(gpGeometry.positions[v1]), to3(gpGeometry.positions[v2])))
 
-			let halfedge = facea.halfedge
-			const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
+			let p = new Vector2(0, 0)
+			let halfedge = gpGeometry.mesh.faces[va.faceIndex].halfedge
+			const fvs = [halfedge.vertex, halfedge.next.vertex, halfedge.prev.vertex]
+			for (let i = 0; i < 3; i++)
+				if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
+					p.x = va.barycoord.getComponent((2 - i) % 3)
+					p.y = va.barycoord.getComponent((1 - i) % 3)
+				}
+			let dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
 			if (dot(dir, sub(vb.point, va.point)) < 0)
 				dir = neg(dir)
 			const u = gpGeometry.vector(halfedge.prev).negated()
@@ -592,10 +585,8 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			p.y = next_py
 			console.assert(vertices.length == 2)
 
-			for (let i = 0; i < 10; i++) {
+			while (halfedge.face.index != vb.faceIndex) {
 				const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
-				if (dot(dir, sub(vb.point, va.point)) < 0)
-					dir = neg(dir)
 				const u = gpGeometry.vector(halfedge.prev).negated()
 				const v = gpGeometry.vector(halfedge)
 				const [dx, dy] = proj2(dir, u, v)
@@ -616,6 +607,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				p.y = next_py
 				console.assert(i == 1)
 			}
+			vertices.push(barycentric(vb.barycoord, to3(gpGeometry.positions[vb0]), to3(gpGeometry.positions[vb1]), to3(gpGeometry.positions[vb2])))
 
 
 			// console.log(vertices)
