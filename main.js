@@ -43,9 +43,11 @@ function mul(a, b) {
 function neg(a) {
 	return a.clone().negate();
 }
-// Project x onto v
-function proj(v, x) {
+function projOnVector(v, x) {
 	return mul(v, v.dot(x));
+}
+function projOnPlane(n, x) {
+	return sub(x, projOnVector(x, n))
 }
 function lerp(x, y, t) {
 	if (typeof x === 'number' && typeof y === 'number')
@@ -111,7 +113,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
 camera.position.set(0, 0, 5);
 
-let geometry = await sampleGeo('duck');
+let geometry = await sampleGeo('bunny');
 geometry.center()
 geometry.computeBoundingSphere()
 const scaleFactor = 1 / geometry.boundingSphere.radius;
@@ -159,66 +161,6 @@ const segmentDensity = 100;
 /*
 	Algorithms
 */
-function buildRectangleVertices(axis, pA, pC, aspect = 1) {
-	pA = pA.clone()
-	pC = pC.clone()
-	pA.y /= aspect;
-	pC.y /= aspect;
-	const pB = add(pA, proj(axis, sub(pC, pA)));
-	const pD = sub(add(pA, pC), pB);
-	const vertexArray = [pA, pB, pC, pD]
-	vertexArray.forEach(x => { x.y *= aspect });
-	return vertexArray;
-}
-function projectLineSegment(v0, v1, projector) {
-	const points = []
-	const nSegments = segmentDensity * sub(v0, v1).length();
-	if (nSegments)
-		for (let i = 0; i <= nSegments; i++) {
-			const t = i / nSegments;
-			const coord = lerp(v0, v1, t);
-			const projection = projector(coord);
-			if (projection)
-				points.push(add(projection.point, mul(projection.normal, epsilon)));
-		}
-	return points
-}
-function projectRectangle(vertices, projector) {
-	const points = []
-	for (let d = 0; d < 4; d++) {
-		points.push(...projectLineSegment(vertices[d], vertices[(d + 1) % 4], projector))
-	}
-	return points
-}
-function buildCircleVertices(pA, pB, aspect = 1.0) {
-	pA = pA.clone()
-	pB = pB.clone()
-	pA.y /= aspect
-	pB.y /= aspect
-	const center = lerp(pA, pB, 0.5)
-	const radius = sub(pA, pB).length() / 2;
-	center.y *= aspect
-	return [center, radius, radius * aspect]
-}
-function projectCircle(pA, pB, aspect, projector) {
-	const [center, rX, rY] = buildCircleVertices(pA, pB, aspect);
-	const points = []
-	const nSegments = rX * 2 * Math.PI * segmentDensity;
-	for (let i = 0; i <= nSegments; i++) {
-		const t = i / nSegments * Math.PI * 2;
-		const coord = new Vector2(center.x + rX * Math.cos(t), center.y + rY * Math.sin(t));
-		const projection = projector(coord);
-		if (projection)
-			points.push(add(projection.point, mul(projection.normal, epsilon)));
-	}
-	return points;
-}
-function arrayToOptional(a) {
-	if (a.length == 0)
-		return undefined;
-	else
-		return a[0];
-}
 function closestPoint(p) {
 	const target = mesh.geometry.boundsTree.closestPointToPoint(p);
 	return { point: target.point, normal: getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal };
@@ -231,13 +173,6 @@ function cameraRayIntersection(coord) {
 		return intersects[0];
 	else
 		return null;
-}
-function buildPlanarSystem(p, n, ...points) {
-	const tbn = coordinateSystem(n);
-	const toLocal = (v) => { return new Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
-	const toWorld = (coord) => { return add(p, mul(tbn[0], coord.x), mul(tbn[1], coord.y)); };
-	const axis = toLocal(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)).normalize();
-	return [toLocal, toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 function pathLength(points) {
 	let totalLength = 0;
@@ -280,6 +215,7 @@ function addVertex(coord) {
 	const intersection = cameraRayIntersection(coord);
 	if (intersection == null)
 		return
+	intersection.ndc = coord
 	gVertexArray.push(intersection);
 
 	const geometry = new THREE.SphereGeometry(0.003, 8, 8);
@@ -326,6 +262,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 	const intersection = cameraRayIntersection(coord);
 	if (intersection == null)
 		return
+	intersection.ndc = coord
 	expectedNextVertex = intersection;
 
 	scene.remove(expectedVertexPointMesh);
@@ -527,6 +464,88 @@ function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 		alert(`Unknown spline method: ${method}`);
 	}
 }
+function vertexPos(index) {
+	return to3(gpGeometry.positions[gpGeometry.mesh.vertices[index]])
+}
+function sliceGeometry(vertices, source, cutN, forwardDir, { stopOnFace, stopOnLength }, dest) {
+	let currentLength = 0
+
+	let halfedge = gpGeometry.mesh.faces[source.faceIndex].halfedge
+	const v0 = gpGeometry.mesh.vertices[source.face.a]
+	const v1 = gpGeometry.mesh.vertices[source.face.b]
+	const v2 = gpGeometry.mesh.vertices[source.face.c]
+	let p = new Vector2(0, 0)
+	const fvs = [halfedge.vertex, halfedge.next.vertex, halfedge.prev.vertex]
+	for (let i = 0; i < 3; i++)
+		if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
+			p.x = source.barycoord.getComponent((5 - i) % 3)
+			p.y = source.barycoord.getComponent((4 - i) % 3)
+		}
+	const firstFaceIndex = halfedge.face.index
+	if (stopOnFace != null && halfedge.face.index == stopOnFace)
+		return vertices
+
+	let dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
+	if (dot(dir, forwardDir) < 0)
+		dir = neg(dir)
+	const u = gpGeometry.vector(halfedge.prev).negated()
+	const v = gpGeometry.vector(halfedge)
+	const [dx, dy] = proj2(dir, u, v)
+	const edges = [
+		{ edge: halfedge, p0: new Vector2(0, 0), p1: new Vector2(0, 1) },
+		{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+		{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+	let next_py = 0
+	for (const { edge, p0, p1 } of edges) {
+		const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+		if (t > 0 && k >= 0 && k <= 1) {
+			vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
+			currentLength += cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
+			next_py = 1 - k
+			halfedge = edge.twin
+		}
+	}
+	p.x = 0
+	p.y = next_py
+
+	while (true) {
+		if (stopOnFace != null && halfedge.face.index == stopOnFace || halfedge.face.index == firstFaceIndex)
+			break
+		if (stopOnLength != null && currentLength > stopOnLength)
+			break
+		const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
+		const u = gpGeometry.vector(halfedge.prev).negated()
+		const v = gpGeometry.vector(halfedge)
+		const [dx, dy] = proj2(dir, u, v)
+		const edges = [
+			{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
+			{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
+		let next_py = 0
+		for (const { edge, p0, p1 } of edges) {
+			const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
+			if (k >= 0 && k <= 1) {
+				vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
+				next_py = 1 - k
+				halfedge = edge.twin
+			}
+		}
+		p.y = next_py
+		currentLength += cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
+	}
+	if (stopOnLength) {
+		console.assert(vertices.length >= 2)
+		const lastSegmentLength = cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
+		const k = 1 - (currentLength - stopOnLength) / lastSegmentLength
+		vertices[vertices.length - 1] = lerp(cyclic(vertices, -2), cyclic(vertices, -1), k)
+		halfedge = halfedge.twin
+		dest.faceIndex = halfedge.face.index
+		dest.face = { a: halfedge.vertex.index, b: halfedge.next.vertex.index, c: halfedge.prev.vertex.index }
+		const [u, v] = proj2(sub(cyclic(vertices, -1), vertexPos(dest.face.a)), gpGeometry.vector(halfedge), gpGeometry.vector(halfedge.prev).negated())
+		dest.barycoord = new Vector3(1 - u - v, u, v)
+	}
+
+	return vertices
+}
 function drawAnnotations({ previewNextVertex = false, completePath = false, shouldCommit = false }) {
 	removeQueue.forEach((x) => scene.remove(x));
 
@@ -539,82 +558,37 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 	if (shape == 'rectangle') {
 		if (gVertexArray.length == 2)
 			shouldCommit = true;
-		const vertices = []
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
+			const vertices = []
 			const va = vertexArray[i * 2]
 			const vb = vertexArray[i * 2 + 1]
-			const vna = normalize(add(va.normal, vb.normal))
-			const vnb = normalize(sub(va.point, vb.point))
-			const cutN = normalize(cross(vna, vnb))
-			const v0 = gpGeometry.mesh.vertices[va.face.a]
-			const v1 = gpGeometry.mesh.vertices[va.face.b]
-			const v2 = gpGeometry.mesh.vertices[va.face.c]
-			const vb0 = gpGeometry.mesh.vertices[vb.face.a]
-			const vb1 = gpGeometry.mesh.vertices[vb.face.b]
-			const vb2 = gpGeometry.mesh.vertices[vb.face.c]
-			vertices.push(barycentric(va.barycoord, to3(gpGeometry.positions[v0]), to3(gpGeometry.positions[v1]), to3(gpGeometry.positions[v2])))
-
-			let p = new Vector2(0, 0)
-			let halfedge = gpGeometry.mesh.faces[va.faceIndex].halfedge
-			const fvs = [halfedge.vertex, halfedge.next.vertex, halfedge.prev.vertex]
-			for (let i = 0; i < 3; i++)
-				if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
-					p.x = va.barycoord.getComponent((2 - i) % 3)
-					p.y = va.barycoord.getComponent((1 - i) % 3)
-				}
-			let dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
-			if (dot(dir, sub(vb.point, va.point)) < 0)
-				dir = neg(dir)
-			const u = gpGeometry.vector(halfedge.prev).negated()
-			const v = gpGeometry.vector(halfedge)
-			const [dx, dy] = proj2(dir, u, v)
-			const edges = [
-				{ edge: halfedge, p0: new Vector2(0, 0), p1: new Vector2(0, 1) },
-				{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
-				{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
-			let next_py = 0
-			for (const { edge, p0, p1 } of edges) {
-				const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-				if (t > 0 && k >= 0 && k <= 1) {
-					vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
-					next_py = 1 - k
-					halfedge = edge.twin
-				}
+			const dest = {}
+			{
+				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
+				const cutN = new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+				const targetLength = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point)).length()
+				sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(vb.point, va.point)), { stopOnLength: targetLength }, dest)
 			}
-			p.x = 0
-			p.y = next_py
-			console.assert(vertices.length == 2)
-
-			while (halfedge.face.index != vb.faceIndex) {
-				const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
-				const u = gpGeometry.vector(halfedge.prev).negated()
-				const v = gpGeometry.vector(halfedge)
-				const [dx, dy] = proj2(dir, u, v)
-				const edges = [
-					{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
-					{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
-				let i = 0
-				let next_py = 0
-				for (const { edge, p0, p1 } of edges) {
-					const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-					if (k >= 0 && k <= 1) {
-						i++
-						vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
-						next_py = 1 - k
-						halfedge = edge.twin
-					}
-				}
-				p.y = next_py
-				console.assert(i == 1)
+			{
+				const p = cyclic(vertices, -1)
+				const cutN = normalize(cross(sub(vb.point, p), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
+				sliceGeometry(vertices, dest, cutN, projOnPlane(cutN, sub(vb.point, p)), { stopOnFace: vb.faceIndex })
+				vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
 			}
-			vertices.push(barycentric(vb.barycoord, to3(gpGeometry.positions[vb0]), to3(gpGeometry.positions[vb1]), to3(gpGeometry.positions[vb2])))
-
-
-			// console.log(vertices)
-
+			{
+				const cutN = new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+				const targetLength = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point)).length()
+				sliceGeometry(vertices, vb, cutN, projOnPlane(cutN, sub(va.point, vb.point)), { stopOnLength: targetLength }, dest)
+			}
+			{
+				const p = cyclic(vertices, -1)
+				const cutN = normalize(cross(sub(va.point, p), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
+				sliceGeometry(vertices, dest, cutN, projOnPlane(cutN, sub(va.point, p)), { stopOnFace: va.faceIndex })
+				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
+			}
+			annotations.push(createPath(vertices));
 		}
 
-		annotations.push(createPath(vertices));
 	} else if (shape == 'circle') {
 		if (gVertexArray.length == 2)
 			shouldCommit = true;
@@ -633,7 +607,7 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
 				if (projectionMethod == 'normal')
 					vertices = projectCircle(pA, pC, 1, coord => {
-						const worldPos = add(toWorld(coord), proj(n, sub(camera.position, p)));
+						const worldPos = add(toWorld(coord), projOnVector(n, sub(camera.position, p)));
 						raycaster.set(worldPos, neg(n));
 						return arrayToOptional(raycaster.intersectObject(mesh, false));
 					});
