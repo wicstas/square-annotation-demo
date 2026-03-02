@@ -113,7 +113,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
 camera.position.set(0, 0, 5);
 
-let geometry = await sampleGeo('bunny');
+let geometry = await sampleGeo('duck');
 geometry.center()
 geometry.computeBoundingSphere()
 const scaleFactor = 1 / geometry.boundingSphere.radius;
@@ -139,7 +139,7 @@ const material = new THREE.MeshNormalMaterial({ polygonOffset: true, polygonOffs
 const mesh = new THREE.Mesh(geometry, material);
 const baseMesh = new THREE.Mesh(baseGeometry, material);
 scene.add(mesh);
-scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x000000 })))
+// scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x000000 })))
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 scene.add(ambientLight);
@@ -562,87 +562,46 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			const vertices = []
 			const va = vertexArray[i * 2]
 			const vb = vertexArray[i * 2 + 1]
+			const ca = va.point.clone().project(camera)
+			const cb = vb.point.clone().project(camera)
+			const vc = cameraRayIntersection(new Vector2(ca.x, cb.y))
+			const vd = cameraRayIntersection(new Vector2(cb.x, ca.y))
 			const dest = {}
-			{
+			const n = normalize(add(va.normal, vb.normal))
+			const addEdge = (va, vb) => {
 				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-				const cutN = new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
-				const targetLength = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point)).length()
-				sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(vb.point, va.point)), { stopOnLength: targetLength }, dest)
-			}
-			{
-				const p = cyclic(vertices, -1)
-				const cutN = normalize(cross(sub(vb.point, p), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
-				sliceGeometry(vertices, dest, cutN, projOnPlane(cutN, sub(vb.point, p)), { stopOnFace: vb.faceIndex })
+				const cutN = normalize(cross(sub(vb.point, va.point), n))
+				sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(vb.point, va.point)), { stopOnFace: vb.faceIndex }, dest)
 				vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
 			}
-			{
-				const cutN = new Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
-				const targetLength = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point)).length()
-				sliceGeometry(vertices, vb, cutN, projOnPlane(cutN, sub(va.point, vb.point)), { stopOnLength: targetLength }, dest)
-			}
-			{
-				const p = cyclic(vertices, -1)
-				const cutN = normalize(cross(sub(va.point, p), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
-				sliceGeometry(vertices, dest, cutN, projOnPlane(cutN, sub(va.point, p)), { stopOnFace: va.faceIndex })
-				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
+			if (vc && vd) {
+				addEdge(va, vc)
+				addEdge(vc, vb)
+				addEdge(vb, vd)
+				addEdge(vd, va)
 			}
 			annotations.push(createPath(vertices));
 		}
 
 	} else if (shape == 'circle') {
+	} else if (shape == 'polygon') {
 		if (gVertexArray.length == 2)
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
-			let p0 = vertexArray[i * 2].clone();
-			let p1 = vertexArray[i * 2 + 1].clone();
-			const pc = lerp(p0, p1, 0.5);
-			let area = 0;
-
-			let vertices;
-			if (screenspaceProjection) {
-				vertices = projectCircle(p0, p1, width / height, cameraRayIntersection);
-				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
-			} else {
-				const { point: p, normal: n } = centerMode ? { point: vertexArray[i * 2], normal: normalArray[i * 2] } : closestPoint(pc);
-				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
-				if (projectionMethod == 'normal')
-					vertices = projectCircle(pA, pC, 1, coord => {
-						const worldPos = add(toWorld(coord), projOnVector(n, sub(camera.position, p)));
-						raycaster.set(worldPos, neg(n));
-						return arrayToOptional(raycaster.intersectObject(mesh, false));
-					});
-				else if (projectionMethod == 'distance')
-					vertices = projectCircle(pA, pC, 1, coord => closestPoint(toWorld(coord)));
-				area = polygonArea(vertices);
-			}
+			const vertices = []
+			const va = vertexArray[i * 2]
+			const vb = vertexArray[i * 2 + 1]
+			const vna = normalize(add(va.normal, vb.normal))
+			const vnb = normalize(sub(va.point, vb.point))
+			const cutN = normalize(cross(vna, vnb))
+			const pa = barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c))
+			const pb = barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c))
+			vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
+			// const cutN = normalize(cross(sub(pb, pa), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
+			sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(pb, pa)), { stopOnFace: vb.faceIndex }, {})
+			vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
 			annotations.push(createPath(vertices));
-
-			if (vertices && vertices.length > 0) {
-				if (i >= activeLabels.length)
-					createLabel(i, vertices[0]);
-				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${area.toFixed(2)}`;
-			}
 		}
-	} else if (shape == 'polygon') {
-		let vertices = [];
-
-		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
-			let p0 = vertexArray[i].clone();
-			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
-
-			let segment = screenspaceProjection ? projectLineSegment(p0, p1, cameraRayIntersection) : projectLineSegment(p0, p1, closestPoint);
-			vertices.push(...segment);
-
-			if (segment.length > 0) {
-				if (i >= activeLabels.length)
-					createLabel(i, segment[0]);
-				activeLabels[i].textContent = `length: ${pathLength(segment).toFixed(2)}`;
-			}
-		}
-		annotations.push(createPath(vertices));
-		if (activeLabels.length > 0)
-			activeLabels[0].textContent += `\narea: ${polygonArea(vertices).toFixed(2)}`;
-
 	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
