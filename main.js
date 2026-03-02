@@ -113,7 +113,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
 camera.position.set(0, 0, 5);
 
-let geometry = await sampleGeo('duck');
+let geometry = await sampleGeo('melody');
 geometry.center()
 geometry.computeBoundingSphere()
 const scaleFactor = 1 / geometry.boundingSphere.radius;
@@ -228,7 +228,7 @@ function createPath(points) {
 	const geometry = new LineGeometry();
 	if (points.length > 0)
 		geometry.setFromPoints(points);
-	return new Line2(geometry, new LineMaterial({ linewidth: 4, vertexColors: true }));
+	return new Line2(geometry, new LineMaterial({ linewidth: 2, vertexColors: true }));
 }
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -562,23 +562,30 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			const vertices = []
 			const va = vertexArray[i * 2]
 			const vb = vertexArray[i * 2 + 1]
-			const ca = va.point.clone().project(camera)
-			const cb = vb.point.clone().project(camera)
-			const vc = cameraRayIntersection(new Vector2(ca.x, cb.y))
-			const vd = cameraRayIntersection(new Vector2(cb.x, ca.y))
-			const dest = {}
 			const n = normalize(add(va.normal, vb.normal))
-			const addEdge = (va, vb) => {
+			const dest = {}
+			{
 				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-				const cutN = normalize(cross(sub(vb.point, va.point), n))
-				sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(vb.point, va.point)), { stopOnFace: vb.faceIndex }, dest)
+				const cutN = normalize(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion))
+				const cutV = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point))
+				sliceGeometry(vertices, va, cutN, cutV, { stopOnLength: cutV.length() }, dest)
+			}
+			{
+				const p = cyclic(vertices, -1)
+				const cutN = normalize(cross(sub(vb.point, p), n))
+				sliceGeometry(vertices, dest, cutN, sub(vb.point, p), { stopOnFace: vb.faceIndex })
 				vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
 			}
-			if (vc && vd) {
-				addEdge(va, vc)
-				addEdge(vc, vb)
-				addEdge(vb, vd)
-				addEdge(vd, va)
+			{
+				const cutN = normalize(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion))
+				const cutV = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(va.point, vb.point))
+				sliceGeometry(vertices, vb, cutN, cutV, { stopOnLength: cutV.length() }, dest)
+			}
+			{
+				const p = cyclic(vertices, -1)
+				const cutN = normalize(cross(sub(va.point, p), n))
+				sliceGeometry(vertices, dest, cutN, sub(va.point, p), { stopOnFace: va.faceIndex })
+				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
 			}
 			annotations.push(createPath(vertices));
 		}
@@ -597,7 +604,6 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 			const pa = barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c))
 			const pb = barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c))
 			vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-			// const cutN = normalize(cross(sub(pb, pa), new Vector3(0, 1, 0).applyQuaternion(camera.quaternion)))
 			sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(pb, pa)), { stopOnFace: vb.faceIndex }, {})
 			vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
 			annotations.push(createPath(vertices));
