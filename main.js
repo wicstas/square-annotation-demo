@@ -1,38 +1,30 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
 	computeBoundsTree, disposeBoundsTree,
-	acceleratedRaycast,
+	computeBatchedBoundsTree, disposeBatchedBoundsTree, acceleratedRaycast,
 	getTriangleHitPointInfo
 } from 'three-mesh-bvh';
-import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
-const { Vector2, Vector3 } = THREE;
-
-/*
-	Helpers
-*/
 function add(a, b, ...args) {
 	let result = a.clone().add(b);
 	for (const x of args)
 		result.add(x);
 	return result;
 }
-function dot(a, b) {
-	return a.dot(b);
+function sub(a, b) {
+	return a.clone().sub(b);
 }
 function cross(a, b) {
 	return a.clone().cross(b);
 }
-function normalize(a) {
-	return a.clone().normalize();
-}
-function sub(a, b) {
-	return a.clone().sub(b);
+function dot(a, b) {
+	return a.dot(b);
 }
 function mul(a, b) {
 	if (typeof b === 'number')
@@ -43,11 +35,9 @@ function mul(a, b) {
 function neg(a) {
 	return a.clone().negate();
 }
-function projOnVector(v, x) {
+// Project x onto v
+function proj(v, x) {
 	return mul(v, v.dot(x));
-}
-function projOnPlane(n, x) {
-	return sub(x, projOnVector(x, n))
 }
 function lerp(x, y, t) {
 	if (typeof x === 'number' && typeof y === 'number')
@@ -55,53 +45,52 @@ function lerp(x, y, t) {
 	else
 		return x.clone().lerp(y, t);
 }
-function barycentric(b, x, y, z) {
-	return add(mul(x, b.x), mul(y, b.y), mul(z, b.z))
-}
 function coordinateSystem(n, up) {
 	if (up === undefined)
 		up = Math.abs(n.y) < 0.9
-			? new Vector3(0, 1, 0)
-			: new Vector3(1, 0, 0);
+			? new THREE.Vector3(0, 1, 0)
+			: new THREE.Vector3(1, 0, 0);
 
-	const x = new Vector3().crossVectors(up, n).normalize();
+	const x = new THREE.Vector3().crossVectors(up, n).normalize();
 
-	const y = new Vector3().crossVectors(n, x).normalize();
+	const y = new THREE.Vector3().crossVectors(n, x).normalize();
 
 	return [x, y, n.clone()]
 }
-async function sampleGeo(name, scale) {
-	if (name == 'sphere')
-		return new THREE.SphereGeometry(1, 16, 16);
+async function sampleGeo(name) {
+	if (name == 'melody') {
+		const loader = new GLTFLoader();
+		const gltf = await loader.loadAsync('/public/melody.glb');
+		const geometries = [];
+		gltf.scene.traverse((obj) => {
+			if (obj.isMesh) {
+				const geom = obj.geometry.clone();
+				geom.applyMatrix4(obj.matrixWorld);
+				geometries.push(geom);
+			}
+		});
+		return mergeGeometries(
+			geometries,
+			false
+		).scale(0.1, 0.1, 0.1);
+	}
 	if (name == 'knot')
 		return new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
 	if (name == 'torus')
 		return new THREE.TorusGeometry(2, 1, 32)
 	if (name == 'capsule')
 		return new THREE.CapsuleGeometry(1, 1, 30, 40, 1);
-
-	if (scale == null) scale = 1.0
-	const gltf = await new GLTFLoader().loadAsync(`/public/${name}.glb`);
-	const geometries = [];
-	gltf.scene.traverse((obj) => {
-		if (obj.isMesh) {
-			const geom = obj.geometry.clone();
-			geom.applyMatrix4(obj.matrixWorld);
-			geometries.push(geom);
-		}
-	});
-	return mergeGeometries(
-		geometries,
-		false
-	).scale(scale, scale, scale);
+	else
+		alert(`Unknown geometry name ${name}`);
 }
 
-/*
-	Settings
-*/
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+THREE.BatchedMesh.prototype.computeBoundsTree = computeBatchedBoundsTree;
+THREE.BatchedMesh.prototype.disposeBoundsTree = disposeBatchedBoundsTree;
+THREE.BatchedMesh.prototype.raycast = acceleratedRaycast;
 
 let width = window.innerWidth;
 let height = window.innerHeight;
@@ -110,39 +99,24 @@ const dpr = window.devicePixelRatio;
 window.addEventListener('resize', onWindowResize);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(70, width / height, 0.001, 100);
+
+const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);
 camera.position.set(0, 0, 5);
 
-let geometry = await sampleGeo('melody');
-geometry.center()
-geometry.computeBoundingSphere()
-const scaleFactor = 1 / geometry.boundingSphere.radius;
-geometry.scale(scaleFactor, scaleFactor, scaleFactor);
-geometry.computeBoundsTree();
+const geometry = await sampleGeo('melody');
 geometry.computeVertexNormals()
-let baseGeometry = new THREE.BufferGeometry()
-baseGeometry.setIndex(geometry.getIndex())
-baseGeometry.setAttribute('position', geometry.getAttribute('position'))
-const merged = mergeVertices(baseGeometry, 1e-5);
-baseGeometry.dispose();
-baseGeometry = merged;
-baseGeometry.computeVertexNormals()
-const p = baseGeometry.attributes['position'].array
-const v = []
-for (let i = 0; i < p.length; i += 3)
-	v.push(new Vector(p[i], p[i + 1], p[i + 2]))
-const polygonSoup = { v, f: [...baseGeometry.index.array] }
-const gpMesh = new Mesh()
-console.assert(gpMesh.build(polygonSoup))
-const gpGeometry = new Geometry(gpMesh, polygonSoup.v, false)
-const material = new THREE.MeshNormalMaterial({ polygonOffset: true, polygonOffsetUnits: 1, polygonOffsetFactor: 1 });
+geometry.scale(20, 20, 20)
+const material = new THREE.MeshNormalMaterial();
 const mesh = new THREE.Mesh(geometry, material);
-const baseMesh = new THREE.Mesh(baseGeometry, material);
+geometry.computeBoundsTree();
 scene.add(mesh);
-// scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x000000 })))
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 1);
+const ambientLight = new THREE.AmbientLight(0xffffff, 100);
 scene.add(ambientLight);
+const box = new THREE.Box3().setFromObject(mesh);
+const size = new THREE.Vector3();
+box.getSize(size);
+const sceneScaleRef = 1 / 3 * (box.max.z - box.min.z + box.max.y - box.min.y + box.max.x - box.min.x)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(dpr)
@@ -154,13 +128,83 @@ const controls = new OrbitControls(camera, renderer.domElement);
 const raycaster = new THREE.Raycaster();
 raycaster.firstHitOnly = true
 
+let centerMode = false
+let screenspaceProjection = false
+let cameraAxisAlign = true
+let projectionMethod = 'normal'
 let shape = "rectangle"
 const epsilon = 0.01;
-const segmentDensity = 100;
+const segmentDensity = 500 / sceneScaleRef;
 
-/*
-	Algorithms
-*/
+function buildRectangleVertices(axis, pA, pC, aspect = 1) {
+	pA = pA.clone()
+	pC = pC.clone()
+	pA.y /= aspect;
+	pC.y /= aspect;
+	const A = pC.x - pA.x;
+	const B = pC.y - pA.y;
+	let pB;
+	let pD;
+	if (cameraAxisAlign) {
+		pB = add(pA, proj(axis, sub(pC, pA)));
+		pD = sub(add(pA, pC), pB);
+	} else {
+		pB = new THREE.Vector2(pA.x + (A - B) / 2, pA.y + (A + B) / 2);
+		pD = new THREE.Vector2(pA.x + (A + B) / 2, pA.y - (A - B) / 2);
+	}
+	const vertexArray = [pA, pB, pC, pD]
+	vertexArray.forEach(x => { x.y *= aspect });
+	return vertexArray;
+}
+function projectLineSegment(v0, v1, projector) {
+	const points = []
+	const nSegments = segmentDensity * sub(v0, v1).length();
+	if (nSegments)
+		for (let i = 0; i <= nSegments; i++) {
+			const t = i / nSegments;
+			const coord = lerp(v0, v1, t);
+			const projection = projector(coord);
+			if (projection)
+				points.push(add(projection.point, mul(projection.normal, epsilon)));
+		}
+	return points
+}
+function projectRectangle(vertices, projector) {
+	const points = []
+	for (let d = 0; d < 4; d++) {
+		points.push(...projectLineSegment(vertices[d], vertices[(d + 1) % 4], projector))
+	}
+	return points
+}
+function buildCircleVertices(pA, pB, aspect = 1.0) {
+	pA = pA.clone()
+	pB = pB.clone()
+	pA.y /= aspect
+	pB.y /= aspect
+	const center = lerp(pA, pB, 0.5)
+	const radius = sub(pA, pB).length() / 2;
+	center.y *= aspect
+	return [center, radius, radius * aspect]
+}
+function projectCircle(pA, pB, aspect, projector) {
+	const [center, rX, rY] = buildCircleVertices(pA, pB, aspect);
+	const points = []
+	const nSegments = rX * 2 * Math.PI * segmentDensity;
+	for (let i = 0; i <= nSegments; i++) {
+		const t = i / nSegments * Math.PI * 2;
+		const coord = new THREE.Vector2(center.x + rX * Math.cos(t), center.y + rY * Math.sin(t));
+		const projection = projector(coord);
+		if (projection)
+			points.push(add(projection.point, mul(projection.normal, epsilon)));
+	}
+	return points;
+}
+function arrayToOptional(a) {
+	if (a.length == 0)
+		return undefined;
+	else
+		return a[0];
+}
 function closestPoint(p) {
 	const target = mesh.geometry.boundsTree.closestPointToPoint(p);
 	return { point: target.point, normal: getTriangleHitPointInfo(target.point, mesh.geometry, target.faceIndex).face.normal };
@@ -168,11 +212,18 @@ function closestPoint(p) {
 }
 function cameraRayIntersection(coord) {
 	raycaster.setFromCamera(coord, camera);
-	const intersects = raycaster.intersectObject(baseMesh, false);
+	const intersects = raycaster.intersectObject(mesh, false);
 	if (intersects.length > 0)
 		return intersects[0];
 	else
 		return null;
+}
+function buildPlanarSystem(p, n, ...points) {
+	const tbn = coordinateSystem(n);
+	const toLocal = (v) => { return new THREE.Vector2(v.dot(tbn[0]), v.dot(tbn[1])); };
+	const toWorld = (coord) => { return add(p, mul(tbn[0], coord.x), mul(tbn[1], coord.y)); };
+	const axis = toLocal(cross(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), n)).normalize();
+	return [toLocal, toWorld, axis, ...points.map((point) => toLocal(sub(point, p)))];
 }
 function pathLength(points) {
 	let totalLength = 0;
@@ -213,16 +264,18 @@ function updateLabels() {
 
 function addVertex(coord) {
 	const intersection = cameraRayIntersection(coord);
-	if (intersection == null)
-		return
-	intersection.ndc = coord
-	gVertexArray.push(intersection);
+	if (screenspaceProjection)
+		gVertexArray.push(coord);
+	else if (intersection)
+		gVertexArray.push(intersection);
 
-	const geometry = new THREE.SphereGeometry(0.003, 8, 8);
-	const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-	const mesh = new THREE.Mesh(geometry, material);
-	mesh.position.copy(intersection.point);
-	scene.add(mesh);
+	if (intersection) {
+		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+		const mesh = new THREE.Mesh(geometry, material);
+		mesh.position.copy(intersection.point);
+		scene.add(mesh);
+	}
 }
 function createPath(points) {
 	const geometry = new LineGeometry();
@@ -233,10 +286,12 @@ function createPath(points) {
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
 	if (!controls.enabled) {
-		let coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		removeQueue.forEach((x) => scene.remove(x));
-		drawAnnotations({});
+		const { annotations, shouldCommit } = drawAnnotations({});
+		if (shouldCommit)
+			removeQueue = annotations;
 	}
 
 	released = false;
@@ -244,7 +299,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
 	if ((controls.enabled && !moved) || (!controls.enabled && moved)) {
-		let coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+		let coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 		addVertex(coord);
 		drawAnnotations({});
 	}
@@ -257,20 +312,22 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 	moved = true;
 	if (!released && controls.enabled)
 		return;
-	const coord = new Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
+	const coord = new THREE.Vector2((e.clientX / width) * 2 - 1, -(e.clientY / height) * 2 + 1);
 
 	const intersection = cameraRayIntersection(coord);
-	if (intersection == null)
-		return
-	intersection.ndc = coord
-	expectedNextVertex = intersection;
+	if (screenspaceProjection)
+		expectedNextVertex = coord;
+	else
+		expectedNextVertex = intersection;
 
-	scene.remove(expectedVertexPointMesh);
-	const geometry = new THREE.SphereGeometry(0.003, 8, 8);
-	const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-	expectedVertexPointMesh = new THREE.Mesh(geometry, material);
-	expectedVertexPointMesh.position.copy(intersection.point);
-	scene.add(expectedVertexPointMesh);
+	if (intersection) {
+		scene.remove(expectedVertexPointMesh);
+		const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+		const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+		expectedVertexPointMesh = new THREE.Mesh(geometry, material);
+		expectedVertexPointMesh.position.copy(intersection.point);
+		scene.add(expectedVertexPointMesh);
+	}
 
 	drawAnnotations({ previewNextVertex: true });
 });
@@ -329,21 +386,8 @@ function deBoorHalf(k, n, t, d, closed) {
 	return lerp(deBoorHalf(k - 1, n - 1, t / 2 + 0.5, d, closed), deBoorHalf(k - 1, n, t / 2, d, closed), t);
 }
 function solve(a, b, c, d, b0, b1) {
-	const det = 1 / (a * d - b * c);
-	return [add(mul(b0, d * det), mul(b1, -b * det))
-		, add(mul(b0, -c * det), mul(b1, a * det))];
-}
-function solveScalar(a, b, c, d, b0, b1) {
-	const det = 1 / (a * d - b * c);
-	return [b0 * d * det + b1 * -b * det,
-	b0 * -c * det + b1 * a * det];
-}
-function to3(v) {
-	return new Vector3(v.x, v.y, v.z)
-}
-// Project x onto v and w
-function proj2(x, v, w) {
-	return solveScalar(dot(v, v), dot(v, w), dot(v, w), dot(w, w), dot(x, v), dot(x, w))
+	return [add(mul(b0, d / (a * d - b * c)), mul(b1, -b / (a * d - b * c)))
+		, add(mul(b0, -c / (a * d - b * c)), mul(b1, a / (a * d - b * c)))];
 }
 function solveTridiagonal(a, b, d, crossEntry) {
 	const r = d.map(x => x.clone());
@@ -400,9 +444,16 @@ function solveTridiagonal(a, b, d, crossEntry) {
 
 	return r;
 }
+// console.log(solveTridiagonal(4, 4, [new THREE.Vector2(1, 2), new THREE.Vector2(3, 4), new THREE.Vector2(5, 6)], true));
 
 function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
-	if (method == 'cubic') {
+	if (method == 'catmull-rom') {
+		if (vertexArray.length < 2)
+			return [];
+		let curve = new THREE.CatmullRomCurve3(vertexArray);
+		curve.closed = closed;
+		return curve.getPoints(nSegments);
+	} else if (method == 'cubic') {
 		if (vertexArray.length < 2)
 			return [];
 		const input = vertexArray;
@@ -464,167 +515,146 @@ function createSpline(method, vertexArray, nSegments, closed, uniformSpace) {
 		alert(`Unknown spline method: ${method}`);
 	}
 }
-function vertexPos(index) {
-	return to3(gpGeometry.positions[gpGeometry.mesh.vertices[index]])
-}
-function sliceGeometry(vertices, source, cutN, forwardDir, { stopOnFace, stopOnLength }, dest) {
-	let currentLength = 0
-
-	let halfedge = gpGeometry.mesh.faces[source.faceIndex].halfedge
-	const v0 = gpGeometry.mesh.vertices[source.face.a]
-	const v1 = gpGeometry.mesh.vertices[source.face.b]
-	const v2 = gpGeometry.mesh.vertices[source.face.c]
-	let p = new Vector2(0, 0)
-	const fvs = [halfedge.vertex, halfedge.next.vertex, halfedge.prev.vertex]
-	for (let i = 0; i < 3; i++)
-		if (fvs[i] == v0 && fvs[(i + 1) % 3] == v1 && fvs[(i + 2) % 3] == v2) {
-			p.x = source.barycoord.getComponent((5 - i) % 3)
-			p.y = source.barycoord.getComponent((4 - i) % 3)
-		}
-	const firstFaceIndex = halfedge.face.index
-	if (stopOnFace != null && halfedge.face.index == stopOnFace)
-		return vertices
-
-	let dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
-	if (dot(dir, forwardDir) < 0)
-		dir = neg(dir)
-	const u = gpGeometry.vector(halfedge.prev).negated()
-	const v = gpGeometry.vector(halfedge)
-	const [dx, dy] = proj2(dir, u, v)
-	const edges = [
-		{ edge: halfedge, p0: new Vector2(0, 0), p1: new Vector2(0, 1) },
-		{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
-		{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
-	let next_py = 0
-	for (const { edge, p0, p1 } of edges) {
-		const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-		if (t > 0 && k >= 0 && k <= 1) {
-			vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
-			currentLength += cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
-			next_py = 1 - k
-			halfedge = edge.twin
-		}
-	}
-	p.x = 0
-	p.y = next_py
-
-	while (true) {
-		if (stopOnFace != null && halfedge.face.index == stopOnFace || halfedge.face.index == firstFaceIndex)
-			break
-		if (stopOnLength != null && currentLength > stopOnLength)
-			break
-		const dir = normalize(cross(to3(gpGeometry.faceNormal(halfedge.face)), cutN))
-		const u = gpGeometry.vector(halfedge.prev).negated()
-		const v = gpGeometry.vector(halfedge)
-		const [dx, dy] = proj2(dir, u, v)
-		const edges = [
-			{ edge: halfedge.next, p0: new Vector2(0, 1), p1: new Vector2(1, 0) },
-			{ edge: halfedge.prev, p0: new Vector2(1, 0), p1: new Vector2(0, 0) }]
-		let next_py = 0
-		for (const { edge, p0, p1 } of edges) {
-			const [t, k] = solveScalar(dx, p0.x - p1.x, dy, p0.y - p1.y, p0.x - p.x, p0.y - p.y)
-			if (k >= 0 && k <= 1) {
-				vertices.push(lerp(to3(gpGeometry.positions[edge.vertex]), to3(gpGeometry.positions[edge.next.vertex]), k))
-				next_py = 1 - k
-				halfedge = edge.twin
-			}
-		}
-		p.y = next_py
-		currentLength += cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
-	}
-	if (stopOnLength) {
-		console.assert(vertices.length >= 2)
-		const lastSegmentLength = cyclic(vertices, -1).distanceTo(cyclic(vertices, -2))
-		const k = 1 - (currentLength - stopOnLength) / lastSegmentLength
-		vertices[vertices.length - 1] = lerp(cyclic(vertices, -2), cyclic(vertices, -1), k)
-		halfedge = halfedge.twin
-		dest.faceIndex = halfedge.face.index
-		dest.face = { a: halfedge.vertex.index, b: halfedge.next.vertex.index, c: halfedge.prev.vertex.index }
-		const [u, v] = proj2(sub(cyclic(vertices, -1), vertexPos(dest.face.a)), gpGeometry.vector(halfedge), gpGeometry.vector(halfedge.prev).negated())
-		dest.barycoord = new Vector3(1 - u - v, u, v)
-	}
-
-	return vertices
-}
 function drawAnnotations({ previewNextVertex = false, completePath = false, shouldCommit = false }) {
 	removeQueue.forEach((x) => scene.remove(x));
 
-	const vertexArray = [...gVertexArray];
-	if (previewNextVertex && expectedNextVertex)
-		vertexArray.push(expectedNextVertex);
+	let vertexArray;
+	let normalArray;
+
+	if (screenspaceProjection) {
+		vertexArray = [...gVertexArray];
+		if (previewNextVertex && expectedNextVertex) {
+			vertexArray.push(expectedNextVertex);
+		}
+	} else {
+		vertexArray = gVertexArray.map(x => x.point);
+		normalArray = gVertexArray.map(x => x.normal);
+		if (previewNextVertex && expectedNextVertex) {
+			vertexArray.push(expectedNextVertex.point);
+			normalArray.push(expectedNextVertex.normal);
+		}
+	}
 
 	const annotations = []
 
 	if (shape == 'rectangle') {
-		if (gVertexArray.length == 2)
+		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
-			const vertices = []
-			const va = vertexArray[i * 2]
-			const vb = vertexArray[i * 2 + 1]
-			const n = normalize(add(va.normal, vb.normal))
-			const dest = {}
-			{
-				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-				const cutN = normalize(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion))
-				const cutV = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(vb.point, va.point))
-				sliceGeometry(vertices, va, cutN, cutV, { stopOnLength: cutV.length() }, dest)
-			}
-			{
-				const p = cyclic(vertices, -1)
-				const cutN = normalize(cross(sub(vb.point, p), n))
-				sliceGeometry(vertices, dest, cutN, sub(vb.point, p), { stopOnFace: vb.faceIndex })
-				vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
-			}
-			{
-				const cutN = normalize(new Vector3(1, 0, 0).applyQuaternion(camera.quaternion))
-				const cutV = projOnVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), sub(va.point, vb.point))
-				sliceGeometry(vertices, vb, cutN, cutV, { stopOnLength: cutV.length() }, dest)
-			}
-			{
-				const p = cyclic(vertices, -1)
-				const cutN = normalize(cross(sub(va.point, p), n))
-				sliceGeometry(vertices, dest, cutN, sub(va.point, p), { stopOnFace: va.faceIndex })
-				vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-			}
-			annotations.push(createPath(vertices));
-		}
+			console.assert(i * 2 + 1 < vertexArray.length);
+			let p0 = vertexArray[i * 2].clone();
+			let p1 = vertexArray[i * 2 + 1].clone();
+			if (centerMode)
+				p0 = sub(mul(p0, 2), p1);
+			const pc = lerp(p0, p1, 0.5);
 
+			let vertices;
+			let length = 0;
+			let area = 0;
+			if (screenspaceProjection) {
+				vertices = buildRectangleVertices(new THREE.Vector2(1, 0), p0, p1, width / height);
+				vertices = projectRectangle(vertices, cameraRayIntersection);
+				length = pathLength(vertices);
+				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
+			} else {
+				const p = pc
+				const n = add(normalArray[i * 2], normalArray[i * 2 + 1], new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion)).normalize()
+				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				vertices = buildRectangleVertices(axis, pA, pC, width / height);
+				if (projectionMethod == 'normal')
+					vertices = projectRectangle(vertices, coord => {
+						const worldPos = add(toWorld(coord), mul(n, 100));
+						raycaster.set(worldPos, neg(n));
+						return arrayToOptional(raycaster.intersectObject(mesh, false));
+					});
+				else if (projectionMethod == 'distance')
+					vertices = projectRectangle(vertices, coord => closestPoint(toWorld(coord)));
+				length = pathLength(vertices);
+				area = polygonArea(vertices);
+			}
+			annotations.push(createPath(vertices));
+
+			if (vertices && vertices.length > 0) {
+				if (i >= activeLabels.length) {
+					createLabel(i, vertices[0]);
+				}
+				activeLabels[i].textContent = `length: ${length.toFixed(2)}\narea: ${area.toFixed(2)}`;
+			}
+		}
 	} else if (shape == 'circle') {
-	} else if (shape == 'polygon') {
-		if (gVertexArray.length == 2)
+		if ((!previewNextVertex && vertexArray.length == 2) || (previewNextVertex && vertexArray.length == 3))
 			shouldCommit = true;
 		for (let i = 0; i < Math.trunc(vertexArray.length / 2); i++) {
-			const vertices = []
-			const va = vertexArray[i * 2]
-			const vb = vertexArray[i * 2 + 1]
-			const vna = normalize(add(va.normal, vb.normal))
-			const vnb = normalize(sub(va.point, vb.point))
-			const cutN = normalize(cross(vna, vnb))
-			const pa = barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c))
-			const pb = barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c))
-			vertices.push(barycentric(va.barycoord, vertexPos(va.face.a), vertexPos(va.face.b), vertexPos(va.face.c)))
-			sliceGeometry(vertices, va, cutN, projOnPlane(cutN, sub(pb, pa)), { stopOnFace: vb.faceIndex }, {})
-			vertices.push(barycentric(vb.barycoord, vertexPos(vb.face.a), vertexPos(vb.face.b), vertexPos(vb.face.c)))
+			let p0 = vertexArray[i * 2].clone();
+			let p1 = vertexArray[i * 2 + 1].clone();
+			if (centerMode)
+				p0 = sub(mul(p0, 2), p1);
+			const pc = lerp(p0, p1, 0.5);
+			let area = 0;
+
+			let vertices;
+			if (screenspaceProjection) {
+				vertices = projectCircle(p0, p1, width / height, cameraRayIntersection);
+				area = polygonArea(vertices, x => x.clone().applyMatrix4(camera.matrixWorldInverse));
+			} else {
+				const { point: p, normal: n } = centerMode ? { point: vertexArray[i * 2], normal: normalArray[i * 2] } : closestPoint(pc);
+				const [toLocal, toWorld, axis, pA, pC] = buildPlanarSystem(p, n, p0, p1);
+				if (projectionMethod == 'normal')
+					vertices = projectCircle(pA, pC, 1, coord => {
+						const worldPos = add(toWorld(coord), proj(n, sub(camera.position, p)));
+						raycaster.set(worldPos, neg(n));
+						return arrayToOptional(raycaster.intersectObject(mesh, false));
+					});
+				else if (projectionMethod == 'distance')
+					vertices = projectCircle(pA, pC, 1, coord => closestPoint(toWorld(coord)));
+				area = polygonArea(vertices);
+			}
 			annotations.push(createPath(vertices));
+
+			if (vertices && vertices.length > 0) {
+				if (i >= activeLabels.length)
+					createLabel(i, vertices[0]);
+				activeLabels[i].textContent = `length: ${pathLength(vertices).toFixed(2)}\narea: ${area.toFixed(2)}`;
+			}
 		}
+	} else if (shape == 'polygon') {
+		let vertices = [];
+
+		for (let i = 0; i < (completePath ? vertexArray.length : vertexArray.length - 1); i++) {
+			let p0 = vertexArray[i].clone();
+			let p1 = vertexArray[(i + 1) % vertexArray.length].clone();
+
+			let segment = screenspaceProjection ? projectLineSegment(p0, p1, cameraRayIntersection) : projectLineSegment(p0, p1, closestPoint);
+			vertices.push(...segment);
+
+			if (segment.length > 0) {
+				if (i >= activeLabels.length)
+					createLabel(i, segment[0]);
+				activeLabels[i].textContent = `length: ${pathLength(segment).toFixed(2)}`;
+			}
+		}
+		annotations.push(createPath(vertices));
+		if (activeLabels.length > 0)
+			activeLabels[0].textContent += `\narea: ${polygonArea(vertices).toFixed(2)}`;
+
 	} else if (['catmull-rom', 'cubic', 'bspline'].includes(shape)) {
 		if (vertexArray.length > 1) {
 			if (screenspaceProjection)
-				vertexArray = vertexArray.map(v => new Vector3(v.x, v.y, 0));
+				vertexArray = vertexArray.map(v => new THREE.Vector3(v.x, v.y, 0));
 			let totalLength = 0;
 			for (let i = 0; i < vertexArray.length - 1; i++)
 				totalLength += sub(vertexArray[i], vertexArray[i + 1]).length();
 			if (closed)
 				totalLength += sub(vertexArray[0], cyclic(vertexArray, -1)).length();
 			const nSegments = segmentDensity * totalLength;
+			console.log(nSegments);
 			if (nSegments == 0)
 				return [];
 			let vertices = [];
 			if (screenspaceProjection) {
 				vertices = createSpline(shape, vertexArray, nSegments, completePath, false);
 				vertices = vertices.map(p => {
-					const projection = cameraRayIntersection(new Vector2(p.x, p.y));
+					const projection = cameraRayIntersection(new THREE.Vector2(p.x, p.y));
 					if (projection)
 						return add(projection.point, mul(projection.normal, epsilon));
 					else
@@ -656,6 +686,8 @@ function drawAnnotations({ previewNextVertex = false, completePath = false, shou
 		commitAnnotations();
 	else
 		removeQueue = annotations;
+
+	return annotations;
 }
 
 function setupToggle(id, getValue, setValue, key) {
@@ -686,23 +718,58 @@ setupToggle('orbit-toggle', () => controls.enabled, x => {
 	controls.enabled = x;
 	commitAnnotations();
 }, '1');
+setupToggle('center-mode', () => centerMode, x => {
+	centerMode = x;
+	commitAnnotations();
+}, '2');
+setupToggle('screen-space', () => screenspaceProjection, x => {
+	screenspaceProjection = x;
+	commitAnnotations();
+}, '3');
+setupToggle('camera-align', () => cameraAxisAlign, x => {
+	cameraAxisAlign = x;
+	commitAnnotations();
+}, '4');
+document.getElementById('projection-method').addEventListener('change', e => {
+	projectionMethod = e.target.value;
+	commitAnnotations();
+});
+
+const projectionMethodElement = document.getElementById("projection-method");
+const optionNormalElement = projectionMethodElement.querySelector('option[value="normal"]');
 
 document.getElementById('draw-shape').addEventListener('change', e => {
 	shape = e.target.value;
+	if (shape == 'rectangle') {
+		document.getElementById('center-mode').disabled = false;
+		document.getElementById('camera-align').disabled = false;
+		optionNormalElement.disabled = false;
+	}
+	else if (shape == 'circle') {
+		document.getElementById('center-mode').disabled = false;
+		document.getElementById('camera-align').disabled = true;
+		optionNormalElement.disabled = false;
+	}
+	else {
+		document.getElementById('center-mode').disabled = true;
+		document.getElementById('camera-align').disabled = true;
+		optionNormalElement.disabled = true;
+		projectionMethod = 'distance';
+	}
 	commitAnnotations();
 });
+document.getElementById("projection-method").value = projectionMethod
 document.getElementById("draw-shape").value = shape
-
 window.addEventListener('keydown', (e) => {
 	if (e.key == 'Enter') {
 		scene.remove(expectedVertexPointMesh);
-		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false });
+		drawAnnotations({ completePath: true, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	} if (e.key == 'Escape') {
 		scene.remove(expectedVertexPointMesh);
 		if (gVertexArray.length == 1) {
 			activeLabels.forEach(x => x.remove());
 		}
-		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false });
+		drawAnnotations({ completePath: false, shouldCommit: true, previewNextVertex: false }).forEach((x) => scene.add(x));
 	}
 });
 

@@ -59,22 +59,6 @@
   }
 }
 </script>
-  <script src="geometry-processing-js/linear-algebra/linear-algebra-asm.js"></script>
-  <script src="geometry-processing-js/linear-algebra/vector.js"></script>
-  <script src="geometry-processing-js/linear-algebra/emscripten-memory-manager.js"></script>
-  <script src="geometry-processing-js/linear-algebra/dense-matrix.js"></script>
-  <script src="geometry-processing-js/linear-algebra/sparse-matrix.js"></script>
-  <script src="geometry-processing-js/core/vertex.js"></script>
-  <script src="geometry-processing-js/core/edge.js"></script>
-  <script src="geometry-processing-js/core/face.js"></script>
-  <script src="geometry-processing-js/core/halfedge.js"></script>
-  <script src="geometry-processing-js/core/corner.js"></script>
-  <script src="geometry-processing-js/core/mesh.js"></script>
-  <script src="geometry-processing-js/core/geometry.js"></script>
-  <script src="geometry-processing-js/utils/colormap.js"></script>
-  <script src="geometry-processing-js/projects/geodesic-distance/heat-method.js"></script>
-	<script src="geometry-processing-js/input/bunny.js"></script>
-	<script src="geometry-processing-js/utils/meshio.js"></script>
 </head>
 
 <body>
@@ -82,10 +66,24 @@
     <button id="orbit-toggle" class="toggle">
       (1) Toggle Orbit Control
     </button>
+    <button id="center-mode" class="toggle">
+      (2) Center Mode
+    </button>
+    <button id="screen-space" class="toggle">
+      (3) Screenspace Projection
+    </button>
+    <button id="camera-align" class="toggle">
+      (4) Camera Axis Align
+    </button>
+    <select id="projection-method" class="selector">
+      <option value="normal" selected>ProjectionMethod: Normal</option>
+      <option value="distance">ProjectionMethod: Distance</option>
+    </select>
     <select id="draw-shape" class="selector">
       <option value="rectangle">Shape: Rectangle</option>
       <option value="circle">Shape: Circle</option>
       <option value="polygon">Shape: Polygon</option>
+      <option value="catmull-rom">Shape: Catmull-Rom</option>
       <option value="cubic">Shape: Cubic</option>
       <option value="bspline">Shape: Bspline</option>
     </select>
@@ -96,9 +94,6 @@
     </div>
   </div>
 
-  <script>
-    const memoryManager = new EmscriptenMemoryManager();
-  </script>
   <script type="module" src="main.js"></script>
 </body>
 
