@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "outDir": "dist",
+    "skipLibCheck": true,
+    "moduleResolution": "nodenext",
+    "baseUrl": ".",
+    "paths": {
+      "three/addons/*": ["node_modules/three/examples/jsm/*"]
+    }
+  },
+  "display": "Recommended",
+  "$schema": "https://www.schemastore.org/tsconfig",
+  "include": ["main.ts"],
+}

@@ -9,5 +9,9 @@
   "dependencies": {
     "three": "^0.182.0",
     "three-mesh-bvh": "^0.9.8"
+  },
+  "devDependencies": {
+    "@types/three": "^0.183.1",
+    "typescript": "^5.9.3"
   }
 }
