@@ -14,9 +14,6 @@ const dpr = window.devicePixelRatio;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(dpr)
 renderer.setSize(width, height);
-renderer.setAnimationLoop((time) => {
-	renderer.render(scene, camera);
-});
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -77,11 +74,11 @@ async function loadDataTexture(url) {
 		dataTextureWidth,
 		256 * 256 / dataTextureWidth,
 		THREE.RedIntegerFormat,
-		THREE.UnsignedByteType, 
-		THREE.UVMapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.NearestFilter, 
+		THREE.UnsignedByteType,
+		THREE.UVMapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.NearestFilter,
 		THREE.NearestFilter
 	);
 	const tile = new THREE.DataTexture(
@@ -89,11 +86,11 @@ async function loadDataTexture(url) {
 		dataTextureWidth,
 		128 * 128 * 8 / dataTextureWidth,
 		THREE.RedIntegerFormat,
-		THREE.UnsignedByteType, 
-		THREE.UVMapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.NearestFilter, 
+		THREE.UnsignedByteType,
+		THREE.UVMapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.NearestFilter,
 		THREE.NearestFilter
 	);
 	const ranking = new THREE.DataTexture(
@@ -101,17 +98,17 @@ async function loadDataTexture(url) {
 		dataTextureWidth,
 		128 * 128 * 8 / dataTextureWidth,
 		THREE.RedIntegerFormat,
-		THREE.UnsignedByteType, 
-		THREE.UVMapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.ClampToEdgeWrapping, 
-		THREE.NearestFilter, 
+		THREE.UnsignedByteType,
+		THREE.UVMapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.ClampToEdgeWrapping,
+		THREE.NearestFilter,
 		THREE.NearestFilter
 	);
 
 	return [sobol, tile, ranking];
 }
-const [sobolTex, sobolTileTex,sobolRankingTex]  = await loadDataTexture('/public/sobol.bin')
+const [sobolTex, sobolTileTex, sobolRankingTex] = await loadDataTexture('/public/sobol.bin')
 
 const renderTarget = new THREE.WebGLRenderTarget(aoTextureWidth, aoTextureHeight, {
 	depthBuffer: false,
@@ -233,17 +230,33 @@ composer.addPass(aoPass);
 composer.addPass(hBlur);
 composer.addPass(vBlur);
 
-const t0 = performance.now();
-composer.render()
-renderer.getContext().finish()
-const t1 = performance.now();
-
-console.log('AO computed in:', t1 - t0, 'ms');
+// const t0 = performance.now();
+// composer.render()
+// renderer.getContext().finish()
+// const t1 = performance.now();
+// console.log('AO computed in:', t1 - t0, 'ms');
 
 const plane = new THREE.Mesh(new THREE.PlaneGeometry(AOPlaneSize.x, AOPlaneSize.y), new THREE.MeshBasicMaterial({
-	map: composer.readBuffer.texture,
+	map: composer.renderTarget1.texture,
 	side: THREE.DoubleSide
 }))
 plane.rotateX(Math.PI / 2)
 plane.position.copy(AOPlanePosition)
 scene.add(plane)
+
+const y = AOPlanePosition.y
+let timeStart
+renderer.setAnimationLoop((time) => {
+	if (timeStart == null) {
+		timeStart = time
+		return
+	}
+
+	AOPlanePosition.y = y + 0.5 * Math.sin((time - timeStart) / 5000)
+	plane.position.copy(AOPlanePosition)
+	composer.render()
+	composer.swapBuffers()
+	aoPass.uniforms.AOPlanePosition.value = AOPlanePosition
+	renderer.getContext().finish()
+	renderer.render(scene, camera);
+});
